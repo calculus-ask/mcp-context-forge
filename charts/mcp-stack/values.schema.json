@@ -1,8 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/IBM/mcp-context-forge/charts/mcp-stack/values.schema.json",
-  "title": "MCP Stack Helm Chart Values",
-  "description": "JSON Schema for MCP Stack Helm Chart values.yaml",
   "type": "object",
   "properties": {
     "benchmark": {
@@ -111,107 +108,21 @@
     },
     "global": {
       "type": "object",
-      "description": "Global settings applied across the entire Helm release",
       "properties": {
+        "fullnameOverride": {
+          "type": "string",
+          "description": "Fully-qualified name override (optional)",
+          "default": ""
+        },
         "imagePullSecrets": {
           "type": "array",
           "description": "List of image pull secrets for private registries",
-          "items": {
-            "type": "string"
-          },
           "default": []
         },
         "nameOverride": {
           "type": "string",
           "description": "Short name applied to all resources (optional)",
           "default": ""
-        },
-        "fullnameOverride": {
-          "type": "string",
-          "description": "Fully-qualified name override (optional)",
-          "default": ""
-        },
-        "env": {
-          "type": "string",
-          "description": "Environment name (e.g., dev, staging, prod)",
-          "default": ""
-        },
-        "project": {
-          "type": "string",
-          "description": "Project name",
-          "default": ""
-        },
-        "secret_region": {
-          "type": "string",
-          "description": "Region where AWS Secrets Manager is hosted",
-          "default": ""
-        },
-        "secret_refresh_interval": {
-          "type": "string",
-          "description": "Secret refresh interval",
-          "default": ""
-        },
-        "postgres_secret_name": {
-          "type": "string",
-          "description": "PostgreSQL secret name in AWS Secrets Manager",
-          "default": ""
-        },
-        "gateway_secret_name": {
-          "type": "string",
-          "description": "Gateway secret name in AWS Secrets Manager",
-          "default": ""
-        },
-        "secrets": {
-          "type": "object",
-          "properties": {
-            "postgres": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "List of postgres secret keys"
-            }
-          },
-          "required": ["postgres"]
-        },
-        "affinity": {
-          "type": "object",
-          "description": "Kubernetes affinity settings",
-          "properties": {
-            "nodeAffinity": {
-              "type": "object",
-              "properties": {
-                "requiredDuringSchedulingIgnoredDuringExecution": {
-                  "type": "object",
-                  "properties": {
-                    "nodeSelectorTerms": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "matchExpressions": {
-                            "type": "array",
-                            "items": {
-                              "type": "object",
-                              "properties": {
-                                "key": { "type": "string" },
-                                "operator": { "type": "string" },
-                                "values": {
-                                  "type": "array",
-                                  "items": { "type": "string" }
-                                }
-                              },
-                              "required": ["key", "operator"]
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
         }
       },
       "description": "Global settings applied across the entire Helm release"
@@ -1567,31 +1478,6 @@
           },
           "description": "Horizontal Pod Autoscaler configuration"
         },
-        "pdb": {
-          "type": "object",
-          "description": "Pod Disruption Budget configuration",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "Enable Pod Disruption Budget",
-              "default": true
-            },
-            "minAvailable": {
-              "type": "integer",
-              "description": "Minimum number of available replicas",
-              "minimum": 1,
-              "maximum": 2,
-              "default": 1
-            },
-            "maxUnavailable": {
-              "type": "integer",
-              "description": "Maximum number of unavailable replicas",
-              "minimum": 0,
-              "maximum": 1,
-              "default": 1
-            }
-          }
-        },
         "image": {
           "type": "object",
           "properties": {
@@ -1620,17 +1506,20 @@
         },
         "ingress": {
           "type": "object",
-          "description": "Ingress configuration",
           "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "Enable ingress",
-              "default": true
+            "annotations": {
+              "type": "object",
+              "description": "Ingress annotations (merged on top of secure nginx defaults when TLS is enabled)"
             },
             "className": {
               "type": "string",
               "description": "Ingress class name",
               "default": "nginx"
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable ingress",
+              "default": true
             },
             "host": {
               "type": "string",
@@ -1645,24 +1534,20 @@
             "pathType": {
               "type": "string",
               "description": "Ingress path type",
-              "enum": ["Exact", "Prefix", "ImplementationSpecific"],
-              "default": "Prefix"
-            },
-            "annotations": {
-              "type": "object",
-              "description": "Ingress annotations",
-              "additionalProperties": {
-                "type": "string"
-              }
+              "default": "Prefix",
+              "enum": [
+                "Exact",
+                "Prefix",
+                "ImplementationSpecific"
+              ]
             },
             "tls": {
               "type": "object",
-              "description": "TLS configuration for ingress",
               "properties": {
                 "enabled": {
                   "type": "boolean",
                   "description": "Enable TLS for ingress",
-                  "default": false
+                  "default": true
                 },
                 "secretName": {
                   "type": "string",
@@ -1670,10 +1555,10 @@
                   "default": ""
                 }
               },
-              "additionalProperties": false
+              "description": "TLS configuration for ingress"
             }
           },
-          "additionalProperties": false
+          "description": "Ingress configuration"
         },
         "metrics": {
           "type": "object",
@@ -2183,30 +2068,6 @@
             "SSO_ENTRA_ENABLED": {
               "type": "string"
             },
-            "SSO_ADFS_ENABLED": {
-              "type": "string"
-            },
-            "SSO_ADFS_CLIENT_ID": {
-              "type": "string"
-            },
-            "SSO_ADFS_CLIENT_SECRET": {
-              "type": "string"
-            },
-            "SSO_ADFS_AUTHORIZATION_URL": {
-              "type": "string"
-            },
-            "SSO_ADFS_TOKEN_URL": {
-              "type": "string"
-            },
-            "SSO_ADFS_ISSUER": {
-              "type": "string"
-            },
-            "SSO_ADFS_SCOPE": {
-              "type": "string"
-            },
-            "SSO_ADFS_DISPLAY_NAME": {
-              "type": "string"
-            },
             "SSO_GENERIC_ENABLED": {
               "type": "string"
             },
@@ -2253,44 +2114,6 @@
             }
           },
           "description": "Secret configuration"
-        },
-        "serviceAccount": {
-          "type": "object",
-          "description": "ServiceAccount configuration for mcpContextForge pods",
-          "properties": {
-            "annotations": {
-              "type": "object",
-              "description": "ServiceAccount annotations (e.g., AWS IRSA, GCP Workload Identity)",
-              "additionalProperties": {
-                "type": "string"
-              }
-            }
-          }
-        },
-        "envFrom": {
-          "type": "array",
-          "description": "Environment variable sources (secretRef or configMapRef)",
-          "items": {
-            "type": "object",
-            "properties": {
-              "secretRef": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  }
-                }
-              },
-              "configMapRef": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
         },
         "service": {
           "type": "object",
@@ -4899,8 +4722,17 @@
     },
     "serviceAccount": {
       "type": "object",
-      "description": "ServiceAccount configuration for all pods in the release",
       "properties": {
+        "annotations": {
+          "type": "object",
+          "description": "Annotations for the ServiceAccount (e.g., IRSA, Workload Identity)",
+          "default": {}
+        },
+        "automountServiceAccountToken": {
+          "type": "boolean",
+          "description": "Mount the ServiceAccount token in pods",
+          "default": false
+        },
         "create": {
           "type": "boolean",
           "description": "Create a ServiceAccount",
@@ -4910,22 +4742,9 @@
           "type": "string",
           "description": "ServiceAccount name (uses fullname if empty)",
           "default": ""
-        },
-        "annotations": {
-          "type": "object",
-          "description": "Annotations for the ServiceAccount (e.g., IRSA, Workload Identity)",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {}
-        },
-        "automountServiceAccountToken": {
-          "type": "boolean",
-          "description": "Mount the ServiceAccount token in pods",
-          "default": true
         }
       },
-      "additionalProperties": false
+      "description": "ServiceAccount configuration for all pods in the release"
     },
     "testing": {
       "type": "object",

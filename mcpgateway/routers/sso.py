@@ -296,10 +296,8 @@ async def initiate_sso_login(
 @sso_router.get("/callback/{provider_id}")
 async def handle_sso_callback(
     provider_id: str,
-    code: Optional[str] = Query(None, description="Authorization code from SSO provider"),
+    code: str = Query(..., description="Authorization code from SSO provider"),
     state: str = Query(..., description="CSRF state parameter"),
-    error: Optional[str] = Query(None, description="OAuth error code"),
-    error_description: Optional[str] = Query(None, description="OAuth error description"),
     request: Request = None,
     response: Response = None,
     db: Session = Depends(get_db),
@@ -308,16 +306,14 @@ async def handle_sso_callback(
 
     Args:
         provider_id: SSO provider identifier
-        code: Authorization code from provider (present on success)
+        code: Authorization code from provider
         state: CSRF state parameter for validation
-        error: OAuth error code (present on failure)
-        error_description: OAuth error description (present on failure)
         request: FastAPI request object
         response: FastAPI response object
         db: Database session
 
     Returns:
-        JWT access token and user information, or redirect to login with error.
+        JWT access token and user information.
 
     Raises:
         HTTPException: If SSO is disabled or authentication fails
@@ -332,28 +328,6 @@ async def handle_sso_callback(
 
     # Get root path for URL construction
     root_path = request.scope.get("root_path", "") if request else ""
-
-    # Handle OAuth error responses from provider
-    if error:
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-        
-        error_msg = error_description or error
-        logger.warning(f"SSO callback error from provider '{provider_id}': {error} - {error_msg}")
-        
-        # Map common OAuth errors to user-friendly messages
-        if error == "access_denied":
-            return RedirectResponse(url=f"{root_path}/admin/login?error=sso_cancelled", status_code=302)
-        else:
-            return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
-    
-    # Code is required if no error was returned
-    if not code:
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-        
-        logger.warning(f"SSO callback for provider '{provider_id}' missing both code and error parameters")
-        return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
 
     sso_service = SSOService(db)
 
