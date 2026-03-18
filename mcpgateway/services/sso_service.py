@@ -429,6 +429,24 @@ class SSOService:
         result = self.db.execute(stmt)
         return list(result.scalars().all())
 
+    def list_all_providers(self) -> List[SSOProvider]:
+        """Get list of all SSO providers (enabled and disabled).
+
+        Returns:
+            List of all SSO providers
+
+        Examples:
+            Returns empty list when DB has no providers:
+            >>> from unittest.mock import MagicMock
+            >>> service = SSOService(MagicMock())
+            >>> service.db.execute.return_value.scalars.return_value.all.return_value = []
+            >>> service.list_all_providers()
+            []
+        """
+        stmt = select(SSOProvider)
+        result = self.db.execute(stmt)
+        return list(result.scalars().all())
+
     def get_provider(self, provider_id: str) -> Optional[SSOProvider]:
         """Get SSO provider by ID.
 
