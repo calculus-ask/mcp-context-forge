@@ -275,6 +275,31 @@ def get_predefined_sso_providers() -> List[Dict]:
         except Exception as e:
             logger.error(f"Error bootstrapping Keycloak provider: {type(e).__name__}: {e}", exc_info=True)
 
+    # ADFS Provider
+    if settings.sso_adfs_enabled and settings.sso_adfs_client_id and settings.sso_adfs_authorization_url:
+        display_name = settings.sso_adfs_display_name or "ADFS Login"
+        
+        # ADFS uses OIDC but doesn't support GET on userinfo endpoint
+        # We'll extract user info from ID token instead
+        providers.append(
+            {
+                "id": "adfs",
+                "name": "adfs",
+                "display_name": display_name,
+                "provider_type": "oidc",
+                "client_id": settings.sso_adfs_client_id,
+                "client_secret": settings.sso_adfs_client_secret.get_secret_value() if settings.sso_adfs_client_secret else "",
+                "authorization_url": settings.sso_adfs_authorization_url,
+                "token_url": settings.sso_adfs_token_url,
+                "userinfo_url": settings.sso_adfs_token_url,  # Placeholder - not actually used for ADFS
+                "issuer": settings.sso_adfs_issuer,
+                "scope": settings.sso_adfs_scope or "openid profile email",
+                "trusted_domains": settings.sso_trusted_domains,
+                "auto_create_users": settings.sso_auto_create_users,
+                "team_mapping": {},
+            }
+        )
+
     # Generic OIDC Provider (Keycloak, Auth0, Authentik, etc.)
     if settings.sso_generic_enabled and settings.sso_generic_client_id and settings.sso_generic_provider_id:
         provider_id = settings.sso_generic_provider_id
@@ -308,6 +333,10 @@ async def bootstrap_sso_providers() -> None:
 
     This function should be called during application startup to
     automatically configure SSO providers based on environment variables.
+    
+    Providers defined in environment config are enabled, and providers
+    not in the config are disabled to ensure only configured providers
+    appear in the login UI.
 
     Examples:
         >>> # This would typically be called during app startup
@@ -322,14 +351,29 @@ async def bootstrap_sso_providers() -> None:
     from mcpgateway.services.sso_service import SSOService
 
     providers = get_predefined_sso_providers()
-    if not providers:
-        return
-
+    
     db = next(get_db())
     try:
         sso_service = SSOService(db)
+        
+        # Get list of provider IDs from environment config
+        configured_provider_ids = {p["id"] for p in providers}
+        
+        # Get all existing providers from database
+        all_existing_providers = sso_service.list_all_providers()
+        
+        # Disable providers that are not in environment config
+        for existing_provider in all_existing_providers:
+            if existing_provider.id not in configured_provider_ids and existing_provider.is_enabled:
+                # Disable provider not in current config
+                await sso_service.update_provider(existing_provider.id, {"is_enabled": False})
+                print(f"🔒 Disabled SSO provider (not in config): {existing_provider.display_name} (ID: {existing_provider.id})")
 
+        # Create or update providers from environment config
         for provider_config in providers:
+            # Ensure provider is enabled
+            provider_config["is_enabled"] = True
+            
             # Check if provider already exists by ID or name (both have unique constraints)
             existing_by_id = sso_service.get_provider(provider_config["id"])
             existing_by_name = sso_service.get_provider_by_name(provider_config["name"])

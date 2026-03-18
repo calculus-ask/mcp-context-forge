@@ -430,6 +430,24 @@ class SSOService:
         result = self.db.execute(stmt)
         return list(result.scalars().all())
 
+    def list_all_providers(self) -> List[SSOProvider]:
+        """Get list of all SSO providers (enabled and disabled).
+
+        Returns:
+            List of all SSO providers
+
+        Examples:
+            Returns empty list when DB has no providers:
+            >>> from unittest.mock import MagicMock
+            >>> service = SSOService(MagicMock())
+            >>> service.db.execute.return_value.scalars.return_value.all.return_value = []
+            >>> service.list_all_providers()
+            []
+        """
+        stmt = select(SSOProvider)
+        result = self.db.execute(stmt)
+        return list(result.scalars().all())
+
     def get_provider(self, provider_id: str) -> Optional[SSOProvider]:
         """Get SSO provider by ID.
 
@@ -1171,6 +1189,21 @@ class SSOService:
         if provider.id == "keycloak" and verified_id_token_claims:
             keycloak_id_token_claims = verified_id_token_claims
 
+        # ADFS does not support GET method on userinfo endpoint
+        # Extract user info directly from ID token instead
+        if provider.id == "adfs":
+            if token_data and isinstance(token_data.get("id_token"), str):
+                id_token_claims = self._decode_jwt_claims(token_data["id_token"])
+                if id_token_claims:
+                    logger.info("Extracted user info from ADFS ID token for user: %s", id_token_claims.get("upn") or id_token_claims.get("email") or id_token_claims.get("sub"))
+                    return self._normalize_user_info(provider, id_token_claims)
+                else:
+                    logger.error("Failed to decode ADFS ID token claims")
+                    return None
+            else:
+                logger.error("ADFS provider requires id_token in token_data but it was not provided")
+                return None
+
         response = await client.get(provider.userinfo_url, headers={"Authorization": f"Bearer {access_token}"})
 
         if response.status_code == 200:
@@ -1411,6 +1444,32 @@ class SSOService:
                 "username": username,
                 "provider": "entra",
                 "groups": list(set(groups)),  # Deduplicate
+            }
+
+        # Handle ADFS provider
+        if provider.id == "adfs":
+            # ADFS typically uses 'upn' (User Principal Name) as the primary identifier
+            # Common ADFS claims: upn, email, unique_name, name, given_name, family_name, sub
+            email = user_data.get("upn") or user_data.get("email") or user_data.get("unique_name")
+            username = None
+            if email:
+                username = email.split("@")[0]
+            elif user_data.get("unique_name"):
+                username = user_data.get("unique_name").split("@")[0] if "@" in user_data.get("unique_name", "") else user_data.get("unique_name")
+            
+            full_name = user_data.get("name")
+            if not full_name and user_data.get("given_name") and user_data.get("family_name"):
+                full_name = f"{user_data.get('given_name')} {user_data.get('family_name')}"
+            
+            return {
+                "email": email,
+                "email_verified": True,  # ADFS tokens are trusted after successful authentication
+                "full_name": full_name or email,
+                "avatar_url": user_data.get("picture"),
+                "provider_id": user_data.get("sub") or user_data.get("oid") or email,
+                "username": username or email,
+                "provider": "adfs",
+                "groups": user_data.get("groups", []) if isinstance(user_data.get("groups"), list) else [],
             }
 
         # Generic OIDC format for all other providers
@@ -1711,12 +1770,23 @@ class SSOService:
         Returns:
             True if user should be admin, False otherwise
         """
-        # Check domain-based admin assignment
-        domain = email.split("@")[1].lower()
-        if domain in [d.lower() for d in settings.sso_auto_admin_domains]:
-            return True
+        # Validate email format before attempting domain extraction
+        if not email or "@" not in email:
+            logger.warning(f"Invalid email format for admin check: {email!r}")
+            # Continue with other checks that don't require domain
+        else:
+            # Check domain-based admin assignment
+            domain = email.split("@")[1].lower()
+            if domain in [d.lower() for d in settings.sso_auto_admin_domains]:
+                return True
 
-        # Check provider-specific admin assignment
+            # Check provider-specific admin assignment for Google
+            if provider.id == "google" and settings.sso_google_admin_domains:
+                # Check if user's domain is in admin domains
+                if domain in [d.lower() for d in settings.sso_google_admin_domains]:
+                    return True
+
+        # Check GitHub admin orgs (doesn't require domain)
         if provider.id == "github" and settings.sso_github_admin_orgs:
             # For GitHub, we'd need to fetch user's organizations
             # This is a placeholder - in production, you'd make API calls to get orgs
@@ -1724,12 +1794,7 @@ class SSOService:
             if any(org.lower() in [o.lower() for o in settings.sso_github_admin_orgs] for org in github_orgs):
                 return True
 
-        if provider.id == "google" and settings.sso_google_admin_domains:
-            # Check if user's domain is in admin domains
-            if domain in [d.lower() for d in settings.sso_google_admin_domains]:
-                return True
-
-        # Check EntraID admin groups
+        # Check EntraID admin groups (doesn't require domain)
         if provider.id == "entra" and settings.sso_entra_admin_groups:
             user_groups = user_info.get("groups", [])
             if any(group.lower() in [g.lower() for g in settings.sso_entra_admin_groups] for group in user_groups):

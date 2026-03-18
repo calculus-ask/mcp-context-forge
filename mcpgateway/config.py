@@ -377,6 +377,15 @@ class Settings(BaseSettings):
     sso_entra_graph_api_timeout: int = Field(default=10, ge=1, le=120, description="Timeout in seconds for Microsoft Graph group fallback requests")
     sso_entra_graph_api_max_groups: int = Field(default=0, ge=0, description="Maximum groups to keep from Graph fallback (0 = no limit)")
 
+    sso_adfs_enabled: bool = Field(default=False, description="Enable ADFS OIDC authentication")
+    sso_adfs_client_id: Optional[str] = Field(default=None, description="ADFS OAuth client ID")
+    sso_adfs_client_secret: Optional[SecretStr] = Field(default=None, description="ADFS OAuth client secret")
+    sso_adfs_authorization_url: Optional[str] = Field(default=None, description="ADFS authorization endpoint URL (e.g., https://adfs.example.com/adfs/oauth2/authorize/)")
+    sso_adfs_token_url: Optional[str] = Field(default=None, description="ADFS token endpoint URL (e.g., https://adfs.example.com/adfs/oauth2/token/)")
+    sso_adfs_issuer: Optional[str] = Field(default=None, description="ADFS issuer URL (e.g., https://adfs.example.com/adfs)")
+    sso_adfs_scope: Optional[str] = Field(default="openid profile email", description="ADFS OAuth scopes (space-separated)")
+    sso_adfs_display_name: Optional[str] = Field(default="ADFS Login", description="Display name shown on login page for ADFS")
+
     sso_generic_enabled: bool = Field(default=False, description="Enable generic OIDC provider (Keycloak, Auth0, etc.)")
     sso_generic_provider_id: Optional[str] = Field(default=None, description="Provider ID (e.g., 'keycloak', 'auth0', 'authentik')")
     sso_generic_display_name: Optional[str] = Field(default=None, description="Display name shown on login page")
