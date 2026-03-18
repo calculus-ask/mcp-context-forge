@@ -1456,11 +1456,11 @@ class SSOService:
                 username = email.split("@")[0]
             elif user_data.get("unique_name"):
                 username = user_data.get("unique_name").split("@")[0] if "@" in user_data.get("unique_name", "") else user_data.get("unique_name")
-            
+
             full_name = user_data.get("name")
             if not full_name and user_data.get("given_name") and user_data.get("family_name"):
                 full_name = f"{user_data.get('given_name')} {user_data.get('family_name')}"
-            
+
             return {
                 "email": email,
                 "email_verified": True,  # ADFS tokens are trusted after successful authentication
