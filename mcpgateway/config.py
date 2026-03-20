@@ -408,6 +408,12 @@ class Settings(BaseSettings):
     sso_github_admin_orgs: Annotated[list[str], NoDecode] = Field(default_factory=list, description="GitHub orgs granting admin (CSV/JSON)")
     sso_google_admin_domains: Annotated[list[str], NoDecode] = Field(default_factory=list, description="Google admin domains (CSV/JSON)")
     sso_require_admin_approval: bool = Field(default=False, description="Require admin approval for new SSO registrations")
+    
+    # ADFS-specific Settings
+    sso_adfs_default_email_domain: Optional[str] = Field(
+        default=None,
+        description="Default email domain for ADFS when UPN is plain username (e.g., 'company.com' converts 'user123' to 'user123@company.com')"
+    )
 
     # MCP Client Authentication
     mcp_client_auth_enabled: bool = Field(default=True, description="Enable JWT authentication for MCP client operations")

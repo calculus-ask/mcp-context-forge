@@ -1139,6 +1139,14 @@ class SSOService:
         Returns:
             Token response dict or None if failed
         """
+        logger.info(
+            "Token exchange request for provider %s: token_url=%s, redirect_uri=%s, has_code_verifier=%s",
+            provider.id,
+            provider.token_url,
+            auth_session.redirect_uri,
+            bool(auth_session.code_verifier)
+        )
+        
         token_params = {
             "client_id": provider.client_id,
             "client_secret": await self._decrypt_secret(provider.client_secret_encrypted),
@@ -1152,11 +1160,28 @@ class SSOService:
         from mcpgateway.services.http_client_service import get_http_client  # pylint: disable=import-outside-toplevel
 
         client = await get_http_client()
+        
+        logger.info("Sending token exchange POST request to %s for provider %s", provider.token_url, provider.id)
         response = await client.post(provider.token_url, data=token_params, headers={"Accept": "application/json"})
 
         if response.status_code == 200:
-            return response.json()
-        logger.error(f"Token exchange failed for {provider.name}: HTTP {response.status_code} - {response.text}")
+            token_response = response.json()
+            logger.info(
+                "Token exchange successful for provider %s: has_access_token=%s, has_id_token=%s, has_refresh_token=%s, token_type=%s",
+                provider.id,
+                bool(token_response.get("access_token")),
+                bool(token_response.get("id_token")),
+                bool(token_response.get("refresh_token")),
+                token_response.get("token_type", "NONE")
+            )
+            return token_response
+        
+        logger.error(
+            "Token exchange failed for provider %s: HTTP %s - Response: %s",
+            provider.id,
+            response.status_code,
+            response.text[:500] if response.text else "EMPTY"
+        )
 
         return None
 
@@ -1192,16 +1217,52 @@ class SSOService:
         # ADFS does not support GET method on userinfo endpoint
         # Extract user info directly from ID token instead
         if provider.id == "adfs":
+            logger.info("ADFS provider detected - extracting user info from ID token")
             if token_data and isinstance(token_data.get("id_token"), str):
+                logger.info("ADFS ID token present, decoding claims...")
                 id_token_claims = self._decode_jwt_claims(token_data["id_token"])
                 if id_token_claims:
-                    logger.info("Extracted user info from ADFS ID token for user: %s", id_token_claims.get("upn") or id_token_claims.get("email") or id_token_claims.get("sub"))
+                    # Log all available claims for debugging
+                    logger.info(
+                        "ADFS ID token decoded successfully. Claims present: upn=%s, email=%s, unique_name=%s, sub=%s, name=%s, given_name=%s, family_name=%s, preferred_username=%s, oid=%s",
+                        "YES" if id_token_claims.get("upn") else "NO",
+                        "YES" if id_token_claims.get("email") else "NO",
+                        "YES" if id_token_claims.get("unique_name") else "NO",
+                        "YES" if id_token_claims.get("sub") else "NO",
+                        "YES" if id_token_claims.get("name") else "NO",
+                        "YES" if id_token_claims.get("given_name") else "NO",
+                        "YES" if id_token_claims.get("family_name") else "NO",
+                        "YES" if id_token_claims.get("preferred_username") else "NO",
+                        "YES" if id_token_claims.get("oid") else "NO"
+                    )
+                    logger.info(
+                        "ADFS ID token claim values: upn=%s, email=%s, unique_name=%s, preferred_username=%s",
+                        SecurityValidator.sanitize_log_message(str(id_token_claims.get("upn", "NOT_SET"))),
+                        SecurityValidator.sanitize_log_message(str(id_token_claims.get("email", "NOT_SET"))),
+                        SecurityValidator.sanitize_log_message(str(id_token_claims.get("unique_name", "NOT_SET"))),
+                        SecurityValidator.sanitize_log_message(str(id_token_claims.get("preferred_username", "NOT_SET")))
+                    )
+                    
+                    # Log issuer to confirm if it's Entra ID
+                    issuer = id_token_claims.get("iss", "")
+                    if "login.microsoftonline.com" in str(issuer) or "sts.windows.net" in str(issuer):
+                        logger.info(
+                            "ADFS is federating to Microsoft Entra ID (issuer: %s). Token contains Entra claims.",
+                            SecurityValidator.sanitize_log_message(str(issuer))
+                        )
+                    
+                    # Log ALL claim keys for complete visibility
+                    logger.info("ADFS ID token - all claim keys: %s", list(id_token_claims.keys()))
+                    
                     return self._normalize_user_info(provider, id_token_claims)
                 else:
-                    logger.error("Failed to decode ADFS ID token claims")
+                    logger.error("Failed to decode ADFS ID token claims - token may be malformed")
                     return None
             else:
-                logger.error("ADFS provider requires id_token in token_data but it was not provided")
+                logger.error(
+                    "ADFS provider requires id_token in token_data but it was not provided. token_data keys: %s",
+                    list(token_data.keys()) if token_data else "NONE"
+                )
                 return None
 
         response = await client.get(provider.userinfo_url, headers={"Authorization": f"Bearer {access_token}"})
@@ -1449,28 +1510,135 @@ class SSOService:
         # Handle ADFS provider
         if provider.id == "adfs":
             # ADFS typically uses 'upn' (User Principal Name) as the primary identifier
-            # Common ADFS claims: upn, email, unique_name, name, given_name, family_name, sub
-            email = user_data.get("upn") or user_data.get("email") or user_data.get("unique_name")
+            # Common ADFS claims: upn, email, unique_name, preferred_username, name, given_name, family_name, sub
+            # When ADFS federates to Entra ID, preferred_username often contains the email
+            
+            # Log all available claims for debugging
+            logger.info(
+                "ADFS user_data claims: upn=%s, email=%s, unique_name=%s, preferred_username=%s, sub=%s, name=%s",
+                SecurityValidator.sanitize_log_message(str(user_data.get("upn", "NOT_SET"))),
+                SecurityValidator.sanitize_log_message(str(user_data.get("email", "NOT_SET"))),
+                SecurityValidator.sanitize_log_message(str(user_data.get("unique_name", "NOT_SET"))),
+                SecurityValidator.sanitize_log_message(str(user_data.get("preferred_username", "NOT_SET"))),
+                SecurityValidator.sanitize_log_message(str(user_data.get("sub", "NOT_SET"))),
+                SecurityValidator.sanitize_log_message(str(user_data.get("name", "NOT_SET")))
+            )
+            
+            # Priority order: email > preferred_username > upn > unique_name
+            # preferred_username is prioritized because when ADFS federates to Entra ID, it contains the full email
+            raw_email = user_data.get("email") or user_data.get("preferred_username") or user_data.get("upn") or user_data.get("unique_name")
+            
+            logger.info(
+                "ADFS raw_email extracted: %s (from upn/email/unique_name priority)",
+                SecurityValidator.sanitize_log_message(str(raw_email) if raw_email else "NONE")
+            )
+            
+            # Normalize ADFS UPN to email format
+            # ADFS may return UPN in formats like: DOMAIN\username, username, or user@domain.com
+            email = None
+            if raw_email:
+                raw_email_str = str(raw_email).strip()
+                
+                # Check if already in email format
+                if "@" in raw_email_str and "." in raw_email_str.split("@")[-1]:
+                    email = raw_email_str
+                    logger.info(
+                        "ADFS email already in valid format: %s",
+                        SecurityValidator.sanitize_log_message(email)
+                    )
+                # Handle DOMAIN\username format
+                elif "\\" in raw_email_str:
+                    # Extract username from DOMAIN\username
+                    username_part = raw_email_str.split("\\")[-1]
+                    # Try to construct email using provider metadata domain
+                    metadata = provider.provider_metadata or {}
+                    default_domain = metadata.get("default_email_domain")
+                    
+                    # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
+                    if not default_domain:
+                        # First-Party
+                        from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
+                        default_domain = settings.sso_adfs_default_email_domain
+                    
+                    if default_domain:
+                        email = f"{username_part}@{default_domain}"
+                        logger.info(
+                            "ADFS converted DOMAIN\\username format: %s -> %s (using default_email_domain: %s)",
+                            SecurityValidator.sanitize_log_message(raw_email_str),
+                            SecurityValidator.sanitize_log_message(email),
+                            default_domain
+                        )
+                    else:
+                        logger.warning(
+                            "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. "
+                            "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                            SecurityValidator.sanitize_log_message(raw_email_str)
+                        )
+                # Handle plain username without domain
+                elif raw_email_str and not "@" in raw_email_str:
+                    metadata = provider.provider_metadata or {}
+                    default_domain = metadata.get("default_email_domain")
+                    
+                    # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
+                    if not default_domain:
+                        # First-Party
+                        from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
+                        default_domain = settings.sso_adfs_default_email_domain
+                    
+                    if default_domain:
+                        email = f"{raw_email_str}@{default_domain}"
+                        logger.info(
+                            "ADFS converted plain username: %s -> %s (using default_email_domain: %s)",
+                            SecurityValidator.sanitize_log_message(raw_email_str),
+                            SecurityValidator.sanitize_log_message(email),
+                            default_domain
+                        )
+                    else:
+                        logger.warning(
+                            "ADFS UPN is plain username but no default_email_domain configured. "
+                            "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                            SecurityValidator.sanitize_log_message(raw_email_str)
+                        )
+            else:
+                logger.error("ADFS authentication failed: no upn, email, or unique_name claim found in user_data")
+            
             username = None
             if email:
                 username = email.split("@")[0]
-            elif user_data.get("unique_name"):
-                username = user_data.get("unique_name").split("@")[0] if "@" in user_data.get("unique_name", "") else user_data.get("unique_name")
+            elif raw_email:
+                # Fallback: extract username from raw value
+                raw_str = str(raw_email).strip()
+                if "\\" in raw_str:
+                    username = raw_str.split("\\")[-1]
+                elif "@" in raw_str:
+                    username = raw_str.split("@")[0]
+                else:
+                    username = raw_str
 
             full_name = user_data.get("name")
             if not full_name and user_data.get("given_name") and user_data.get("family_name"):
                 full_name = f"{user_data.get('given_name')} {user_data.get('family_name')}"
 
-            return {
+            result = {
                 "email": email,
                 "email_verified": True,  # ADFS tokens are trusted after successful authentication
-                "full_name": full_name or email,
+                "full_name": full_name or email or username,
                 "avatar_url": user_data.get("picture"),
-                "provider_id": user_data.get("sub") or user_data.get("oid") or email,
+                "provider_id": user_data.get("sub") or user_data.get("oid") or email or username,
                 "username": username or email,
                 "provider": "adfs",
                 "groups": user_data.get("groups", []) if isinstance(user_data.get("groups"), list) else [],
             }
+            
+            logger.info(
+                "ADFS final normalized user_info: email=%s, username=%s, full_name=%s, email_verified=%s",
+                SecurityValidator.sanitize_log_message(str(result.get("email", "NONE"))),
+                SecurityValidator.sanitize_log_message(str(result.get("username", "NONE"))),
+                SecurityValidator.sanitize_log_message(str(result.get("full_name", "NONE"))),
+                result.get("email_verified", False)
+            )
+            
+            return result
 
         # Generic OIDC format for all other providers
         return {
@@ -1698,6 +1866,14 @@ class SSOService:
 
             # Determine if user should be admin based on domain/organization
             is_admin = self._should_user_be_admin(email, user_info, provider_ctx)
+
+            logger.info(
+                "ADFS creating new user with email=%s, full_name=%s, is_admin=%s, auth_provider=%s",
+                SecurityValidator.sanitize_log_message(email),
+                SecurityValidator.sanitize_log_message(user_info.get("full_name", email)),
+                is_admin,
+                incoming_provider
+            )
 
             user = await self.auth_service.create_user(
                 email=email,
