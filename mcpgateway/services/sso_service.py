@@ -1533,7 +1533,6 @@ class SSOService:
                 entra_normalized["email_verified"] = user_data["email_verified"]
             return entra_normalized
 
-<<<<<<< HEAD
         # Handle ADFS provider
         if provider.id == "adfs":
             # ADFS typically uses 'upn' (User Principal Name) as the primary identifier
@@ -1583,7 +1582,6 @@ class SSOService:
                     
                     # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
                     if not default_domain:
-                        # First-Party
                         from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
                         default_domain = settings.sso_adfs_default_email_domain
                     
@@ -1608,7 +1606,6 @@ class SSOService:
                     
                     # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
                     if not default_domain:
-                        # First-Party
                         from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
                         default_domain = settings.sso_adfs_default_email_domain
                     
