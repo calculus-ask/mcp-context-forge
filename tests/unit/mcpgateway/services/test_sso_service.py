@@ -1454,7 +1454,7 @@ class TestNormalization:
     def test_normalize_adfs_with_domain_backslash_format_global_setting(self, sso_service):
         """Test ADFS normalization with DOMAIN\\username format using global setting."""
         provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
-        with patch("mcpgateway.config.settings") as mock_settings:
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
             mock_settings.sso_adfs_default_email_domain = "company.com"
             result = sso_service._normalize_user_info(
                 provider,
@@ -1508,7 +1508,7 @@ class TestNormalization:
     def test_normalize_adfs_with_plain_username_global_setting(self, sso_service):
         """Test ADFS normalization with plain username using global setting."""
         provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
-        with patch("mcpgateway.config.settings") as mock_settings:
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
             mock_settings.sso_adfs_default_email_domain = "company.com"
             result = sso_service._normalize_user_info(
                 provider,
