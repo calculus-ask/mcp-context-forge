@@ -1354,6 +1354,35 @@ class SSOService:
 
         return None
 
+    def _get_default_email_domain(self, provider: SSOProvider) -> Optional[str]:
+        """Get default email domain from provider metadata or global settings.
+
+        Args:
+            provider: SSO provider instance
+
+        Returns:
+            Default email domain string, or None if not configured
+
+        Examples:
+            >>> from unittest.mock import Mock
+            >>> service = SSOService(Mock())
+            >>> provider = Mock()
+            >>> provider.provider_metadata = {"default_email_domain": "example.com"}
+            >>> service._get_default_email_domain(provider)
+            'example.com'
+            >>> provider.provider_metadata = {}
+            >>> service._get_default_email_domain(provider) is None
+            True
+        """
+        metadata = provider.provider_metadata or {}
+        default_domain = metadata.get("default_email_domain")
+
+        # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
+        if not default_domain:
+            default_domain = settings.sso_adfs_default_email_domain
+
+        return default_domain
+
     def _normalize_user_info(self, provider: SSOProvider, user_data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize user info from different providers to common format.
 
@@ -1556,12 +1585,7 @@ class SSOService:
                     # Extract username from DOMAIN\username
                     username_part = raw_email_str.split("\\")[-1]
                     # Try to construct email using provider metadata domain
-                    metadata = provider.provider_metadata or {}
-                    default_domain = metadata.get("default_email_domain")
-
-                    # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
-                    if not default_domain:
-                        default_domain = settings.sso_adfs_default_email_domain
+                    default_domain = self._get_default_email_domain(provider)
 
                     if default_domain:
                         email = f"{username_part}@{default_domain}"
@@ -1579,12 +1603,7 @@ class SSOService:
                         )
                 # Handle plain username without domain
                 elif raw_email_str and "@" not in raw_email_str:
-                    metadata = provider.provider_metadata or {}
-                    default_domain = metadata.get("default_email_domain")
-
-                    # Fallback to global SSO_ADFS_DEFAULT_EMAIL_DOMAIN setting
-                    if not default_domain:
-                        default_domain = settings.sso_adfs_default_email_domain
+                    default_domain = self._get_default_email_domain(provider)
 
                     if default_domain:
                         email = f"{raw_email_str}@{default_domain}"
