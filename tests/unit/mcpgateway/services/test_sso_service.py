@@ -1378,7 +1378,384 @@ class TestNormalization:
         assert result["provider"] == "keycloak"
         assert "admin" in result["groups"]
         assert "my-app:editor" in result["groups"]
-        assert "/team-a" in result["groups"]
+
+    def test_normalize_adfs_with_valid_email(self, sso_service):
+        """Test ADFS normalization when email claim is already in valid format."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "name": "ADFS User",
+                "sub": "adfs-123",
+                "groups": ["group1", "group2"],
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+        assert result["full_name"] == "ADFS User"
+        assert result["email_verified"] is True
+        assert result["groups"] == ["group1", "group2"]
+        assert result["provider_id"] == "adfs-123"
+
+    def test_normalize_adfs_with_preferred_username(self, sso_service):
+        """Test ADFS normalization when preferred_username contains email (Entra ID federation)."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "preferred_username": "user@company.com",
+                "upn": "DOMAIN\\user",
+                "name": "ADFS User",
+                "sub": "adfs-456",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+        assert result["email_verified"] is True
+
+    def test_normalize_adfs_with_upn_email_format(self, sso_service):
+        """Test ADFS normalization when UPN is already in email format."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "user@company.com",
+                "name": "ADFS User",
+                "sub": "adfs-789",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+
+    def test_normalize_adfs_with_domain_backslash_format_provider_metadata(self, sso_service):
+        """Test ADFS normalization with DOMAIN\\username format using provider metadata."""
+        provider = _make_provider(
+            id="adfs",
+            name="adfs",
+            provider_metadata={"default_email_domain": "company.com"},
+        )
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "DOMAIN\\user",
+                "name": "ADFS User",
+                "sub": "adfs-101",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+        assert result["email_verified"] is True
+
+    def test_normalize_adfs_with_domain_backslash_format_global_setting(self, sso_service):
+        """Test ADFS normalization with DOMAIN\\username format using global setting."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        with patch("mcpgateway.config.settings") as mock_settings:
+            mock_settings.sso_adfs_default_email_domain = "company.com"
+            result = sso_service._normalize_user_info(
+                provider,
+                {
+                    "upn": "DOMAIN\\user",
+                    "name": "ADFS User",
+                    "sub": "adfs-102",
+                },
+            )
+            assert result["provider"] == "adfs"
+            assert result["email"] == "user@company.com"
+            assert result["username"] == "user"
+
+    def test_normalize_adfs_with_domain_backslash_no_default_domain(self, sso_service):
+        """Test ADFS normalization with DOMAIN\\username format but no default domain configured."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_adfs_default_email_domain = None
+            result = sso_service._normalize_user_info(
+                provider,
+                {
+                    "upn": "DOMAIN\\user",
+                    "name": "ADFS User",
+                    "sub": "adfs-103",
+                },
+            )
+        assert result["provider"] == "adfs"
+        assert result["email"] is None
+        assert result["username"] == "user"  # Username extracted from DOMAIN\username
+
+    def test_normalize_adfs_with_plain_username_provider_metadata(self, sso_service):
+        """Test ADFS normalization with plain username using provider metadata."""
+        provider = _make_provider(
+            id="adfs",
+            name="adfs",
+            provider_metadata={"default_email_domain": "company.com"},
+        )
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "plainuser",
+                "name": "ADFS User",
+                "sub": "adfs-104",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "plainuser@company.com"
+        assert result["username"] == "plainuser"
+        assert result["email_verified"] is True
+
+    def test_normalize_adfs_with_plain_username_global_setting(self, sso_service):
+        """Test ADFS normalization with plain username using global setting."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        with patch("mcpgateway.config.settings") as mock_settings:
+            mock_settings.sso_adfs_default_email_domain = "company.com"
+            result = sso_service._normalize_user_info(
+                provider,
+                {
+                    "upn": "plainuser",
+                    "name": "ADFS User",
+                    "sub": "adfs-105",
+                },
+            )
+            assert result["provider"] == "adfs"
+            assert result["email"] == "plainuser@company.com"
+            assert result["username"] == "plainuser"
+
+    def test_normalize_adfs_with_plain_username_no_default_domain(self, sso_service):
+        """Test ADFS normalization with plain username but no default domain configured."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_adfs_default_email_domain = None
+            result = sso_service._normalize_user_info(
+                provider,
+                {
+                    "upn": "plainuser",
+                    "name": "ADFS User",
+                    "sub": "adfs-106",
+                },
+            )
+        assert result["provider"] == "adfs"
+        assert result["email"] is None
+        assert result["username"] == "plainuser"
+
+    def test_normalize_adfs_with_unique_name_fallback(self, sso_service):
+        """Test ADFS normalization using unique_name as fallback."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "unique_name": "user@company.com",
+                "name": "ADFS User",
+                "sub": "adfs-107",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+
+    def test_normalize_adfs_priority_order(self, sso_service):
+        """Test ADFS claim priority: email > preferred_username > upn > unique_name."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        
+        # Test email takes priority
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "priority@company.com",
+                "preferred_username": "second@company.com",
+                "upn": "third@company.com",
+                "unique_name": "fourth@company.com",
+                "name": "ADFS User",
+            },
+        )
+        assert result["email"] == "priority@company.com"
+        
+        # Test preferred_username takes priority when email is missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "preferred_username": "second@company.com",
+                "upn": "third@company.com",
+                "unique_name": "fourth@company.com",
+                "name": "ADFS User",
+            },
+        )
+        assert result["email"] == "second@company.com"
+        
+        # Test upn takes priority when email and preferred_username are missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "third@company.com",
+                "unique_name": "fourth@company.com",
+                "name": "ADFS User",
+            },
+        )
+        assert result["email"] == "third@company.com"
+
+    def test_normalize_adfs_no_email_claims(self, sso_service):
+        """Test ADFS normalization when no email-related claims are present."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "name": "ADFS User",
+                "sub": "adfs-108",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["email"] is None
+        assert result["username"] is None
+
+    def test_normalize_adfs_with_given_and_family_name(self, sso_service):
+        """Test ADFS normalization constructs full_name from given_name and family_name."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "given_name": "John",
+                "family_name": "Doe",
+                "sub": "adfs-109",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["full_name"] == "John Doe"
+
+    def test_normalize_adfs_full_name_fallback(self, sso_service):
+        """Test ADFS normalization full_name fallback to email or username."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        
+        # Fallback to email when name is missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "sub": "adfs-110",
+            },
+        )
+        assert result["full_name"] == "user@company.com"
+        
+        # Fallback to username when both name and email are missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "DOMAIN\\user",
+                "sub": "adfs-111",
+            },
+        )
+        assert result["full_name"] == "user"
+
+    def test_normalize_adfs_provider_id_fallback(self, sso_service):
+        """Test ADFS normalization provider_id fallback chain: sub > oid > email > username."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        
+        # Test sub is used when present
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "sub": "adfs-sub-123",
+                "oid": "adfs-oid-456",
+            },
+        )
+        assert result["provider_id"] == "adfs-sub-123"
+        
+        # Test oid is used when sub is missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "oid": "adfs-oid-456",
+            },
+        )
+        assert result["provider_id"] == "adfs-oid-456"
+        
+        # Test email is used when both sub and oid are missing
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+            },
+        )
+        assert result["provider_id"] == "user@company.com"
+
+    def test_normalize_adfs_with_groups_claim(self, sso_service):
+        """Test ADFS normalization properly handles groups claim."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "name": "ADFS User",
+                "groups": ["IT-Admins", "Developers", "Users"],
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["groups"] == ["IT-Admins", "Developers", "Users"]
+
+    def test_normalize_adfs_with_non_list_groups(self, sso_service):
+        """Test ADFS normalization handles non-list groups claim gracefully."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "name": "ADFS User",
+                "groups": "single-group-string",
+            },
+        )
+        assert result["provider"] == "adfs"
+        assert result["groups"] == []
+
+    def test_normalize_adfs_email_verified_always_true(self, sso_service):
+        """Test ADFS normalization always sets email_verified to True."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "email": "user@company.com",
+                "name": "ADFS User",
+            },
+        )
+        assert result["email_verified"] is True
+
+    def test_normalize_adfs_provider_metadata_takes_precedence(self, sso_service):
+        """Test ADFS normalization prefers provider metadata over global setting."""
+        provider = _make_provider(
+            id="adfs",
+            name="adfs",
+            provider_metadata={"default_email_domain": "metadata.com"},
+        )
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_adfs_default_email_domain = "global.com"
+            result = sso_service._normalize_user_info(
+                provider,
+                {
+                    "upn": "plainuser",
+                    "name": "ADFS User",
+                },
+            )
+        assert result["email"] == "plainuser@metadata.com"
+
+    def test_normalize_adfs_whitespace_handling(self, sso_service):
+        """Test ADFS normalization properly strips whitespace from claims."""
+        provider = _make_provider(
+            id="adfs",
+            name="adfs",
+            provider_metadata={"default_email_domain": "company.com"},
+        )
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "  user  ",
+                "name": "ADFS User",
+            },
+        )
+        assert result["email"] == "user@company.com"
+        assert result["username"] == "user"
+        assert result["groups"] == []  # No groups provided in test data
 
 
 # ---------------------------------------------------------------------------

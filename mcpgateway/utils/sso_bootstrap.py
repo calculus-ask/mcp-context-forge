@@ -278,7 +278,7 @@ def get_predefined_sso_providers() -> List[Dict]:
     # ADFS Provider
     if settings.sso_adfs_enabled and settings.sso_adfs_client_id and settings.sso_adfs_authorization_url:
         display_name = settings.sso_adfs_display_name or "ADFS Login"
-        
+
         # ADFS uses OIDC but doesn't support GET on userinfo endpoint
         # We'll extract user info from ID token instead
         providers.append(
@@ -333,7 +333,7 @@ async def bootstrap_sso_providers() -> None:
 
     This function should be called during application startup to
     automatically configure SSO providers based on environment variables.
-    
+
     Providers defined in environment config are enabled, and providers
     not in the config are disabled to ensure only configured providers
     appear in the login UI.
@@ -351,17 +351,17 @@ async def bootstrap_sso_providers() -> None:
     from mcpgateway.services.sso_service import SSOService
 
     providers = get_predefined_sso_providers()
-    
+
     db = next(get_db())
     try:
         sso_service = SSOService(db)
-        
+
         # Get list of provider IDs from environment config
         configured_provider_ids = {p["id"] for p in providers}
-        
+
         # Get all existing providers from database
         all_existing_providers = sso_service.list_all_providers()
-        
+
         # Disable providers that are not in environment config
         for existing_provider in all_existing_providers:
             if existing_provider.id not in configured_provider_ids and existing_provider.is_enabled:
@@ -373,7 +373,7 @@ async def bootstrap_sso_providers() -> None:
         for provider_config in providers:
             # Ensure provider is enabled
             provider_config["is_enabled"] = True
-            
+
             # Check if provider already exists by ID or name (both have unique constraints)
             existing_by_id = sso_service.get_provider(provider_config["id"])
             existing_by_name = sso_service.get_provider_by_name(provider_config["name"])

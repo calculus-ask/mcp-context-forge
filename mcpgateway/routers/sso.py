@@ -327,6 +327,9 @@ async def handle_sso_callback(
         >>> asyncio.iscoroutinefunction(handle_sso_callback)
         True
     """
+    # Third-Party
+    from fastapi.responses import RedirectResponse
+
     if not settings.sso_enabled:
         raise HTTPException(status_code=404, detail="SSO authentication is disabled")
 
@@ -335,23 +338,17 @@ async def handle_sso_callback(
 
     # Handle OAuth error responses from provider
     if error:
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-        
         error_msg = error_description or error
         logger.warning(f"SSO callback error from provider '{provider_id}': {error} - {error_msg}")
-        
+
         # Map common OAuth errors to user-friendly messages
         if error == "access_denied":
             return RedirectResponse(url=f"{root_path}/admin/login?error=sso_cancelled", status_code=302)
         else:
             return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
-    
+
     # Code is required if no error was returned
     if not code:
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-        
         logger.warning(f"SSO callback for provider '{provider_id}' missing both code and error parameters")
         return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
 
@@ -363,9 +360,6 @@ async def handle_sso_callback(
 
     browser_session_binding = request.cookies.get("sso_session_id") if request else None
     if not browser_session_binding:
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-
         return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
 
     callback_result = await sso_service.handle_oauth_callback_with_tokens(provider_id, code, state, session_binding=browser_session_binding)
@@ -374,24 +368,15 @@ async def handle_sso_callback(
 
     if not user_info:
         # Redirect back to login with error
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-
         return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
 
     # Authenticate or create user
     access_token = await sso_service.authenticate_or_create_user(user_info)
     if not access_token:
         # Redirect back to login with error
-        # Third-Party
-        from fastapi.responses import RedirectResponse
-
         return RedirectResponse(url=f"{root_path}/admin/login?error=user_creation_failed", status_code=302)
 
     # Create redirect response
-    # Third-Party
-    from fastapi.responses import RedirectResponse
-
     redirect_response = RedirectResponse(url=f"{root_path}/admin", status_code=302)
 
     # Set secure HTTP-only cookie using the same method as email auth
