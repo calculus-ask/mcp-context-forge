@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 
 # First-Party
 from mcpgateway.config import settings
+from mcpgateway.services.sso_service import ADFS_PROVIDER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,8 @@ def get_predefined_sso_providers() -> List[Dict]:
         # We'll extract user info from ID token instead
         providers.append(
             {
-                "id": "adfs",
-                "name": "adfs",
+                "id": ADFS_PROVIDER_ID,
+                "name": ADFS_PROVIDER_ID,
                 "display_name": display_name,
                 "provider_type": "oidc",
                 "client_id": settings.sso_adfs_client_id,

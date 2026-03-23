@@ -42,6 +42,9 @@ from mcpgateway.utils.create_jwt_token import create_jwt_token
 # Logger
 logger = logging.getLogger(__name__)
 
+# Constants
+ADFS_PROVIDER_ID = "adfs"
+
 
 class SSOError(Exception):
     """Base class for SSO-related errors."""
@@ -1230,7 +1233,7 @@ class SSOService:
 
         # ADFS does not support GET method on userinfo endpoint
         # Extract user info directly from ID token instead
-        if provider.id == "adfs":
+        if provider.id == ADFS_PROVIDER_ID:
             logger.info("ADFS provider detected - extracting user info from ID token")
             if token_data and isinstance(token_data.get("id_token"), str):
                 logger.debug("ADFS ID token present, decoding claims...")
@@ -1457,8 +1460,7 @@ class SSOService:
                 )
                 return email
             logger.warning(
-                "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. "
-                "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. " "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
                 SecurityValidator.sanitize_log_message(raw_email_str),
             )
             return None
@@ -1687,7 +1689,7 @@ class SSOService:
             return entra_normalized
 
         # Handle ADFS provider
-        if provider.id == "adfs":
+        if provider.id == ADFS_PROVIDER_ID:
             # ADFS typically uses 'upn' (User Principal Name) as the primary identifier
             # Common ADFS claims: upn, email, unique_name, preferred_username, name, given_name, family_name, sub
             # When ADFS federates to Entra ID, preferred_username often contains the email
@@ -1741,7 +1743,7 @@ class SSOService:
                 "avatar_url": user_data.get("picture"),
                 "provider_id": user_data.get("sub") or user_data.get("oid") or email or username,
                 "username": username or email,
-                "provider": "adfs",
+                "provider": ADFS_PROVIDER_ID,
                 "groups": user_data.get("groups", []) if isinstance(user_data.get("groups"), list) else [],
             }
 
