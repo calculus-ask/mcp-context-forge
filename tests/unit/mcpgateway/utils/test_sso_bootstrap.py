@@ -24,6 +24,83 @@ class DummySecret:
         return self._value
 
 
+def create_base_sso_config(**overrides):
+    """Create a base SSO config with all required attributes.
+
+    Provides default values for all SSO provider settings to avoid AttributeError
+    when new providers are added. Override specific values via keyword arguments.
+    """
+    defaults = {
+        # GitHub
+        "sso_github_enabled": False,
+        "sso_github_client_id": None,
+        "sso_github_client_secret": None,
+        # Google
+        "sso_google_enabled": False,
+        "sso_google_client_id": None,
+        "sso_google_client_secret": None,
+        # IBM Verify
+        "sso_ibm_verify_enabled": False,
+        "sso_ibm_verify_client_id": None,
+        "sso_ibm_verify_client_secret": None,
+        "sso_ibm_verify_issuer": None,
+        # Okta
+        "sso_okta_enabled": False,
+        "sso_okta_client_id": None,
+        "sso_okta_client_secret": None,
+        "sso_okta_issuer": None,
+        "sso_okta_scope": "openid profile email",
+        "okta_group_mapping": None,
+        # Entra ID
+        "sso_entra_enabled": False,
+        "sso_entra_client_id": None,
+        "sso_entra_client_secret": None,
+        "sso_entra_tenant_id": None,
+        "sso_entra_groups_claim": None,
+        "sso_entra_role_mappings": {},
+        "sso_entra_graph_api_enabled": False,
+        "sso_entra_graph_api_timeout": 10,
+        "sso_entra_graph_api_max_groups": 100,
+        # ADFS
+        "sso_adfs_enabled": False,
+        "sso_adfs_client_id": None,
+        "sso_adfs_client_secret": None,
+        "sso_adfs_authorization_url": None,
+        "sso_adfs_token_url": None,
+        "sso_adfs_issuer": None,
+        "sso_adfs_scope": None,
+        "sso_adfs_display_name": None,
+        # Keycloak
+        "sso_keycloak_enabled": False,
+        "sso_keycloak_base_url": None,
+        "sso_keycloak_client_id": None,
+        "sso_keycloak_client_secret": None,
+        "sso_keycloak_realm": "master",
+        "sso_keycloak_map_realm_roles": False,
+        "sso_keycloak_map_client_roles": False,
+        "sso_keycloak_username_claim": "preferred_username",
+        "sso_keycloak_email_claim": "email",
+        "sso_keycloak_groups_claim": "groups",
+        # Generic
+        "sso_generic_enabled": False,
+        "sso_generic_provider_id": None,
+        "sso_generic_display_name": None,
+        "sso_generic_client_id": None,
+        "sso_generic_client_secret": None,
+        "sso_generic_authorization_url": None,
+        "sso_generic_token_url": None,
+        "sso_generic_userinfo_url": None,
+        "sso_generic_issuer": None,
+        "sso_generic_jwks_uri": None,
+        "sso_generic_scope": None,
+        # Common
+        "sso_trusted_domains": [],
+        "sso_auto_create_users": True,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 def test_get_predefined_sso_providers_multiple(monkeypatch):
     """Ensure get_predefined_sso_providers builds provider configs across branches."""
     # First-Party
