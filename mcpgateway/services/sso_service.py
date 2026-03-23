@@ -1679,11 +1679,17 @@ class SSOService:
     async def authenticate_or_create_user(self, user_info: Dict[str, Any]) -> Optional[str]:
         """Authenticate existing user or create new user from SSO info.
 
+        Email is mandatory for SSO authentication. Users without valid email addresses
+        will be rejected. This ensures consistent identity management and prevents
+        authentication failures downstream (JWT generation, database constraints, etc.).
+
         Args:
-            user_info: Normalized user info from SSO provider
+            user_info: Normalized user info from SSO provider. Must contain a valid
+                      'email' field with format validation (contains '@').
 
         Returns:
-            JWT token for authenticated user or None if failed
+            JWT token for authenticated user or None if authentication failed
+            (missing/invalid email, unverified email, untrusted domain, etc.)
         """
         raw_email = user_info.get("email")
         if not raw_email:
