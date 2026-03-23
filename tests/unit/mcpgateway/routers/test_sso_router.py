@@ -218,7 +218,7 @@ async def test_handle_sso_callback_failure_redirect(monkeypatch: pytest.MonkeyPa
     request.scope = {"root_path": ""}
     request.cookies = {"sso_session_id": "session-1"}
 
-    response = await sso_router.handle_sso_callback("provider", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("provider", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302
@@ -230,7 +230,7 @@ async def test_handle_sso_callback_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sso_router.settings, "sso_enabled", False)
 
     with pytest.raises(HTTPException) as excinfo:
-        await sso_router.handle_sso_callback("provider", "code", "state", request=MagicMock(), response=MagicMock(), db=MagicMock())
+        await sso_router.handle_sso_callback("provider", code="code", state="state", request=MagicMock(), response=MagicMock(), db=MagicMock())
 
     assert excinfo.value.status_code == 404
 
@@ -255,7 +255,7 @@ async def test_handle_sso_callback_user_creation_failed(monkeypatch: pytest.Monk
     request.scope = {"root_path": ""}
     request.cookies = {"sso_session_id": "session-1"}
 
-    response = await sso_router.handle_sso_callback("provider", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("provider", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302
@@ -287,7 +287,7 @@ async def test_handle_sso_callback_success_sets_cookie(monkeypatch: pytest.Monke
     request.scope = {"root_path": ""}
     request.cookies = {"sso_session_id": "session-1"}
 
-    response = await sso_router.handle_sso_callback("provider", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("provider", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302
@@ -325,7 +325,7 @@ async def test_handle_sso_callback_keycloak_sets_id_token_hint_cookie(monkeypatc
     request.scope = {"root_path": ""}
     request.cookies = {"sso_session_id": "session-1"}
 
-    response = await sso_router.handle_sso_callback("keycloak", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("keycloak", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302
@@ -365,7 +365,7 @@ async def test_handle_sso_callback_keycloak_oversized_id_token_skips_hint_cookie
     request.scope = {"root_path": ""}
     request.cookies = {"sso_session_id": "session-1"}
 
-    response = await sso_router.handle_sso_callback("keycloak", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("keycloak", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302
@@ -392,7 +392,7 @@ async def test_handle_sso_callback_missing_session_cookie_redirects_failed(monke
     request.scope = {"root_path": ""}
     request.cookies = {}
 
-    response = await sso_router.handle_sso_callback("provider", "code", "state", request=request, response=MagicMock(), db=MagicMock())
+    response = await sso_router.handle_sso_callback("provider", code="code", state="state", error=None, error_description=None, request=request, response=MagicMock(), db=MagicMock())
 
     assert isinstance(response, RedirectResponse)
     assert response.status_code == 302

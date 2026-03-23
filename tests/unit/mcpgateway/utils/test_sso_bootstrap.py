@@ -501,7 +501,7 @@ class TestSSOBootstrapAsync:
 
     @pytest.mark.asyncio
     async def test_bootstrap_skips_when_no_providers(self):
-        """Test that bootstrap_sso_providers returns early when no providers configured."""
+        """Test that bootstrap_sso_providers handles empty provider list correctly."""
         # First-Party
         from mcpgateway.utils.sso_bootstrap import bootstrap_sso_providers
 
@@ -509,12 +509,22 @@ class TestSSOBootstrapAsync:
             mock_settings.sso_enabled = True
 
             with patch("mcpgateway.utils.sso_bootstrap.get_predefined_sso_providers", return_value=[]):
-                # Patch at the source module since it's imported inside the function
+                # Mock the database session and SSOService
+                mock_db = MagicMock()
                 with patch("mcpgateway.db.get_db") as mock_get_db:
-                    await bootstrap_sso_providers()
+                    mock_get_db.return_value = iter([mock_db])
 
-                    # Should not try to get a DB session when no providers
-                    mock_get_db.assert_not_called()
+                    # Mock SSOService to return empty list of existing providers
+                    with patch("mcpgateway.services.sso_service.SSOService") as mock_service_class:
+                        mock_service = MagicMock()
+                        mock_service.list_all_providers.return_value = []
+                        mock_service_class.return_value = mock_service
+
+                        await bootstrap_sso_providers()
+
+                        # Should get DB session and check for existing providers
+                        mock_get_db.assert_called_once()
+                        mock_service.list_all_providers.assert_called_once()
 
 
 def test_generic_oidc_includes_jwks_uri_when_configured(monkeypatch):
