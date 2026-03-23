@@ -1221,14 +1221,14 @@ class SSOService:
         if provider.id == "adfs":
             logger.info("ADFS provider detected - extracting user info from ID token")
             if token_data and isinstance(token_data.get("id_token"), str):
-                logger.info("ADFS ID token present, decoding claims...")
+                logger.debug("ADFS ID token present, decoding claims...")
                 id_token_claims = self._decode_jwt_claims(token_data["id_token"])
                 if not id_token_claims:
                     logger.error("Failed to decode ADFS ID token claims - token may be malformed")
                     return None
 
                 # Log all available claims for debugging
-                logger.info(
+                logger.debug(
                     "ADFS ID token decoded successfully. Claims present: upn=%s, email=%s, unique_name=%s, sub=%s, name=%s, given_name=%s, family_name=%s, preferred_username=%s, oid=%s",
                     "YES" if id_token_claims.get("upn") else "NO",
                     "YES" if id_token_claims.get("email") else "NO",
@@ -1240,7 +1240,7 @@ class SSOService:
                     "YES" if id_token_claims.get("preferred_username") else "NO",
                     "YES" if id_token_claims.get("oid") else "NO",
                 )
-                logger.info(
+                logger.debug(
                     "ADFS ID token claim values: upn=%s, email=%s, unique_name=%s, preferred_username=%s",
                     SecurityValidator.sanitize_log_message(str(id_token_claims.get("upn", "NOT_SET"))),
                     SecurityValidator.sanitize_log_message(str(id_token_claims.get("email", "NOT_SET"))),
@@ -1251,10 +1251,10 @@ class SSOService:
                 # Log issuer to confirm if it's Entra ID
                 issuer = id_token_claims.get("iss", "")
                 if "login.microsoftonline.com" in str(issuer) or "sts.windows.net" in str(issuer):
-                    logger.info("ADFS is federating to Microsoft Entra ID (issuer: %s). Token contains Entra claims.", SecurityValidator.sanitize_log_message(str(issuer)))
+                    logger.debug("ADFS is federating to Microsoft Entra ID (issuer: %s). Token contains Entra claims.", SecurityValidator.sanitize_log_message(str(issuer)))
 
                 # Log ALL claim keys for complete visibility
-                logger.info("ADFS ID token - all claim keys: %s", list(id_token_claims.keys()))
+                logger.debug("ADFS ID token - all claim keys: %s", list(id_token_claims.keys()))
 
                 return self._normalize_user_info(provider, id_token_claims)
 
