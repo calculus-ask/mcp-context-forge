@@ -1720,6 +1720,61 @@ class TestNormalization:
             },
         )
         assert result["email_verified"] is True
+    @pytest.mark.asyncio
+    async def test_authenticate_with_none_email_from_adfs(self, sso_service):
+        """Test that authentication fails gracefully when ADFS returns None email.
+        
+        This verifies that email is mandatory for SSO authentication and that
+        users without valid email addresses are properly rejected before attempting
+        user creation or JWT generation.
+        """
+        # Simulate normalized user info from ADFS with None email
+        # (as returned by _normalize_user_info when no email claims are present)
+        user_info = {
+            "provider": "adfs",
+            "email": None,
+            "username": "testuser",
+            "full_name": "Test User",
+            "provider_id": "adfs-123",
+            "email_verified": True,
+        }
+        
+        # Should return None (authentication rejected)
+        result = await sso_service.authenticate_or_create_user(user_info)
+        assert result is None
+        
+    @pytest.mark.asyncio
+    async def test_authenticate_with_empty_email_from_adfs(self, sso_service):
+        """Test that authentication fails when email is empty string after normalization."""
+        user_info = {
+            "provider": "adfs",
+            "email": "   ",  # Whitespace-only email
+            "username": "testuser",
+            "full_name": "Test User",
+            "provider_id": "adfs-124",
+            "email_verified": True,
+        }
+        
+        # Should return None (authentication rejected)
+        result = await sso_service.authenticate_or_create_user(user_info)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_with_invalid_email_format(self, sso_service):
+        """Test that authentication fails when email lacks @ symbol."""
+        user_info = {
+            "provider": "adfs",
+            "email": "notanemail",  # Missing @ symbol
+            "username": "testuser",
+            "full_name": "Test User",
+            "provider_id": "adfs-125",
+            "email_verified": True,
+        }
+        
+        # Should return None (authentication rejected due to unverified email check)
+        result = await sso_service.authenticate_or_create_user(user_info)
+        assert result is None
+
 
     def test_normalize_adfs_provider_metadata_takes_precedence(self, sso_service):
         """Test ADFS normalization prefers provider metadata over global setting."""
