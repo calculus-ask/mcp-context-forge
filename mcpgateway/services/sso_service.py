@@ -43,6 +43,18 @@ from mcpgateway.utils.create_jwt_token import create_jwt_token
 logger = logging.getLogger(__name__)
 
 
+class SSOError(Exception):
+    """Base class for SSO-related errors."""
+
+
+class SSOAuthenticationError(SSOError):
+    """Raised when SSO authentication fails."""
+
+
+class SSOProviderConfigError(SSOError):
+    """Raised when SSO provider configuration is invalid or incomplete."""
+
+
 @dataclass
 class SSOProviderContext:
     """Lightweight context for SSO provider info passed to helper methods."""
@@ -1258,8 +1270,9 @@ class SSOService:
 
                 return self._normalize_user_info(provider, id_token_claims)
 
-            logger.error("ADFS provider requires id_token in token_data but it was not provided. token_data keys: %s", list(token_data.keys()) if token_data else "NONE")
-            return None
+            error_msg = f"ADFS provider requires id_token in token_data but it was not provided. token_data keys: {list(token_data.keys()) if token_data else 'NONE'}"
+            logger.error(error_msg)
+            raise SSOProviderConfigError(error_msg)
 
         response = await client.get(provider.userinfo_url, headers={"Authorization": f"Bearer {access_token}"})
 
