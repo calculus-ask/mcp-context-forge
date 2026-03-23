@@ -1394,6 +1394,82 @@ class SSOService:
 
         return default_domain
 
+    def _normalize_adfs_email(self, raw_email: str, default_domain: Optional[str]) -> Optional[str]:
+        """Normalize ADFS email/UPN to standard email format.
+
+        ADFS may return UPN in various formats:
+        - user@domain.com (already valid email)
+        - DOMAIN\\username (Windows domain format)
+        - username (plain username without domain)
+
+        Args:
+            raw_email: Raw email/UPN string from ADFS claims
+            default_domain: Default email domain to append if needed
+
+        Returns:
+            Normalized email address, or None if normalization fails
+
+        Examples:
+            >>> from unittest.mock import Mock
+            >>> service = SSOService(Mock())
+            >>> service._normalize_adfs_email("user@example.com", "fallback.com")
+            'user@example.com'
+            >>> service._normalize_adfs_email("DOMAIN\\\\user", "example.com")
+            'user@example.com'
+            >>> service._normalize_adfs_email("user", "example.com")
+            'user@example.com'
+            >>> service._normalize_adfs_email("user", None) is None
+            True
+        """
+        if not raw_email:
+            return None
+
+        raw_email_str = str(raw_email).strip()
+
+        # Check if already in valid email format
+        if "@" in raw_email_str and "." in raw_email_str.split("@")[-1]:
+            logger.info("ADFS email already in valid format: %s", SecurityValidator.sanitize_log_message(raw_email_str))
+            return raw_email_str
+
+        # Handle DOMAIN\username format
+        if "\\" in raw_email_str:
+            username_part = raw_email_str.split("\\")[-1]
+            if default_domain:
+                email = f"{username_part}@{default_domain}"
+                logger.info(
+                    "ADFS converted DOMAIN\\username format: %s -> %s (using default_email_domain: %s)",
+                    SecurityValidator.sanitize_log_message(raw_email_str),
+                    SecurityValidator.sanitize_log_message(email),
+                    default_domain,
+                )
+                return email
+            logger.warning(
+                "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. "
+                "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                SecurityValidator.sanitize_log_message(raw_email_str),
+            )
+            return None
+
+        # Handle plain username without domain
+        if "@" not in raw_email_str:
+            if default_domain:
+                email = f"{raw_email_str}@{default_domain}"
+                logger.info(
+                    "ADFS converted plain username: %s -> %s (using default_email_domain: %s)",
+                    SecurityValidator.sanitize_log_message(raw_email_str),
+                    SecurityValidator.sanitize_log_message(email),
+                    default_domain,
+                )
+                return email
+            logger.warning(
+                "ADFS UPN is plain username but no default_email_domain configured. Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                SecurityValidator.sanitize_log_message(raw_email_str),
+            )
+            return None
+
+        # Fallback: return as-is if no transformation applied
+        return raw_email_str
+
     def _normalize_user_info(self, provider: SSOProvider, user_data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize user info from different providers to common format.
 
@@ -1620,54 +1696,11 @@ class SSOService:
 
             logger.info("ADFS raw_email extracted: %s (from upn/email/unique_name priority)", SecurityValidator.sanitize_log_message(str(raw_email) if raw_email else "NONE"))
 
-            # Normalize ADFS UPN to email format
-            # ADFS may return UPN in formats like: DOMAIN\username, username, or user@domain.com
+            # Normalize ADFS UPN to email format using dedicated helper
             email = None
             if raw_email:
-                raw_email_str = str(raw_email).strip()
-
-                # Check if already in email format
-                if "@" in raw_email_str and "." in raw_email_str.split("@")[-1]:
-                    email = raw_email_str
-                    logger.info("ADFS email already in valid format: %s", SecurityValidator.sanitize_log_message(email))
-                # Handle DOMAIN\username format
-                elif "\\" in raw_email_str:
-                    # Extract username from DOMAIN\username
-                    username_part = raw_email_str.split("\\")[-1]
-                    # Try to construct email using provider metadata domain
-                    default_domain = self._get_default_email_domain(provider)
-
-                    if default_domain:
-                        email = f"{username_part}@{default_domain}"
-                        logger.info(
-                            "ADFS converted DOMAIN\\username format: %s -> %s (using default_email_domain: %s)",
-                            SecurityValidator.sanitize_log_message(raw_email_str),
-                            SecurityValidator.sanitize_log_message(email),
-                            default_domain,
-                        )
-                    else:
-                        logger.warning(
-                            "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. "
-                            "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
-                            SecurityValidator.sanitize_log_message(raw_email_str),
-                        )
-                # Handle plain username without domain
-                elif raw_email_str and "@" not in raw_email_str:
-                    default_domain = self._get_default_email_domain(provider)
-
-                    if default_domain:
-                        email = f"{raw_email_str}@{default_domain}"
-                        logger.info(
-                            "ADFS converted plain username: %s -> %s (using default_email_domain: %s)",
-                            SecurityValidator.sanitize_log_message(raw_email_str),
-                            SecurityValidator.sanitize_log_message(email),
-                            default_domain,
-                        )
-                    else:
-                        logger.warning(
-                            "ADFS UPN is plain username but no default_email_domain configured. Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
-                            SecurityValidator.sanitize_log_message(raw_email_str),
-                        )
+                default_domain = self._get_default_email_domain(provider)
+                email = self._normalize_adfs_email(str(raw_email), default_domain)
             else:
                 logger.error("ADFS authentication failed: no upn, email, or unique_name claim found in user_data")
 
