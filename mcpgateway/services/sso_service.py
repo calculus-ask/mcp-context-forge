@@ -1253,8 +1253,8 @@ class SSOService:
                 if "login.microsoftonline.com" in str(issuer) or "sts.windows.net" in str(issuer):
                     logger.info("ADFS is federating to Microsoft Entra ID (issuer: %s). Token contains Entra claims.", SecurityValidator.sanitize_log_message(str(issuer)))
 
-                # Log ALL claim keys for complete visibility
-                logger.info("ADFS ID token - all claim keys: %s", list(id_token_claims.keys()))
+                # Log ALL claim keys for complete visibility (debug level to reduce production verbosity)
+                logger.debug("ADFS ID token - all claim keys: %s", list(id_token_claims.keys()))
 
                 return self._normalize_user_info(provider, id_token_claims)
 
