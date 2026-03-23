@@ -99,6 +99,81 @@ def test_normalize_origin_defaults():
 
 
 @pytest.mark.asyncio
+async def test_sso_callback_error_access_denied(monkeypatch: pytest.MonkeyPatch):
+    """Test SSO callback with access_denied error redirects to login with sso_cancelled."""
+    monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
+    
+    mock_request = MagicMock()
+    mock_request.scope = {"root_path": ""}
+    mock_response = MagicMock()
+    
+    result = await sso_router.handle_sso_callback(
+        provider_id="github",
+        code=None,
+        state="test-state",
+        error="access_denied",
+        error_description="User cancelled",
+        request=mock_request,
+        response=mock_response,
+        db=MagicMock(),
+    )
+    
+    assert isinstance(result, RedirectResponse)
+    assert result.headers["location"] == "/admin/login?error=sso_cancelled"
+    assert result.status_code == 302
+
+
+@pytest.mark.asyncio
+async def test_sso_callback_error_other(monkeypatch: pytest.MonkeyPatch):
+    """Test SSO callback with other error redirects to login with sso_failed."""
+    monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
+    
+    mock_request = MagicMock()
+    mock_request.scope = {"root_path": ""}
+    mock_response = MagicMock()
+    
+    result = await sso_router.handle_sso_callback(
+        provider_id="github",
+        code=None,
+        state="test-state",
+        error="server_error",
+        error_description="Internal error",
+        request=mock_request,
+        response=mock_response,
+        db=MagicMock(),
+    )
+    
+    assert isinstance(result, RedirectResponse)
+    assert result.headers["location"] == "/admin/login?error=sso_failed"
+    assert result.status_code == 302
+
+
+@pytest.mark.asyncio
+async def test_sso_callback_missing_code_and_error(monkeypatch: pytest.MonkeyPatch):
+    """Test SSO callback with missing code and no error redirects to login with sso_failed."""
+    monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
+    
+    mock_request = MagicMock()
+    mock_request.scope = {"root_path": ""}
+    mock_response = MagicMock()
+    
+    result = await sso_router.handle_sso_callback(
+        provider_id="github",
+        code=None,
+        state="test-state",
+        error=None,
+        error_description=None,
+        request=mock_request,
+        response=mock_response,
+        db=MagicMock(),
+    )
+    
+    assert isinstance(result, RedirectResponse)
+    assert result.headers["location"] == "/admin/login?error=sso_failed"
+    assert result.status_code == 302
+
+
+@pytest.mark.asyncio
 async def test_initiate_sso_login_invalid_redirect(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
     monkeypatch.setattr(sso_router, "_validate_redirect_uri", lambda *_args, **_kwargs: False)

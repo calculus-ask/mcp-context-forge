@@ -198,6 +198,24 @@ class TestProviderCRUD:
             with pytest.raises(ValueError, match="Issuer is not allowed"):
                 await sso_service.update_provider("github", {"issuer": "https://issuer.denied.example.com"})
 
+    def test_list_all_providers(self, sso_service, mock_db):
+        """Test list_all_providers returns all providers including disabled ones."""
+        providers = [
+            _make_provider(id="github", is_enabled=True),
+            _make_provider(id="google", name="google", is_enabled=False),
+        ]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = providers
+        result = sso_service.list_all_providers()
+        assert len(result) == 2
+        assert result[0].id == "github"
+        assert result[1].id == "google"
+
+    def test_list_all_providers_empty(self, sso_service, mock_db):
+        """Test list_all_providers returns empty list when no providers exist."""
+        mock_db.execute.return_value.scalars.return_value.all.return_value = []
+        result = sso_service.list_all_providers()
+        assert result == []
+
     @pytest.mark.asyncio
     async def test_update_provider_not_found(self, sso_service):
         sso_service.get_provider = lambda _id: None
@@ -776,6 +794,90 @@ class TestGetUserInfo:
 
         assert result is not None
         sso_service._verify_oidc_id_token.assert_awaited_once_with(provider, "id-token-without-cached-claims", expected_nonce="nonce-1")
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_with_id_token(self, sso_service):
+        """ADFS provider extracts user info from ID token instead of userinfo endpoint."""
+        # Standard
+        import base64
+
+        # Third-Party
+        import orjson
+
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+
+        # Build a fake id_token with ADFS claims
+        payload = orjson.dumps({
+            "sub": "user-oid",
+            "upn": "user@corp.example.com",
+            "email": "user@corp.example.com",
+            "unique_name": "CORP\\user",
+            "name": "Test User",
+            "given_name": "Test",
+            "family_name": "User",
+            "preferred_username": "user@corp.example.com",
+            "oid": "object-id-123",
+            "iss": "https://adfs.corp.example.com/adfs"
+        })
+        payload_b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        fake_id_token = f"eyJhbGciOiJSUzI1NiJ9.{payload_b64}.sig"
+
+        token_data = {"access_token": "at", "id_token": fake_id_token}
+
+        result = await sso_service._get_user_info(provider, "at", token_data)
+
+        assert result is not None
+        assert result["provider"] == "adfs"
+        assert result["email"] == "user@corp.example.com"
+        assert result["username"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_with_entra_issuer(self, sso_service):
+        """ADFS federating to Entra ID should be detected by issuer."""
+        # Standard
+        import base64
+
+        # Third-Party
+        import orjson
+
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+
+        # Build a fake id_token with Entra issuer
+        payload = orjson.dumps({
+            "sub": "user-oid",
+            "upn": "user@corp.example.com",
+            "email": "user@corp.example.com",
+            "iss": "https://login.microsoftonline.com/tenant-id/v2.0"
+        })
+        payload_b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        fake_id_token = f"eyJhbGciOiJSUzI1NiJ9.{payload_b64}.sig"
+
+        token_data = {"access_token": "at", "id_token": fake_id_token}
+
+        result = await sso_service._get_user_info(provider, "at", token_data)
+
+        assert result is not None
+        assert result["provider"] == "adfs"
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_missing_id_token(self, sso_service):
+        """ADFS provider requires id_token in token_data."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        token_data = {"access_token": "at"}  # Missing id_token
+
+        result = await sso_service._get_user_info(provider, "at", token_data)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_malformed_id_token(self, sso_service):
+        """ADFS provider should handle malformed id_token gracefully."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        token_data = {"access_token": "at", "id_token": "malformed.token"}
+
+        result = await sso_service._get_user_info(provider, "at", token_data)
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_user_info_oidc_fallback_skips_verification_without_nonce(self, sso_service):
@@ -1881,6 +1983,45 @@ class TestNormalization:
             },
         )
         assert result["email_verified"] is True
+
+    def test_normalize_username_extraction_from_raw_email_with_backslash(self, sso_service):
+        """Test username extraction fallback for DOMAIN\\user format in raw email field."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "DOMAIN\\testuser",
+                "name": "Test User",
+                "sub": "adfs-123",
+            },
+        )
+        assert result["username"] == "testuser"
+
+    def test_normalize_username_extraction_from_raw_email_with_at_sign(self, sso_service):
+        """Test username extraction fallback for email format in raw field."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "testuser@domain.com",
+                "name": "Test User",
+                "sub": "adfs-456",
+            },
+        )
+        assert result["username"] == "testuser"
+
+    def test_normalize_username_extraction_from_raw_email_plain(self, sso_service):
+        """Test username extraction fallback for plain username in raw field."""
+        provider = _make_provider(id="adfs", name="adfs", provider_metadata={})
+        result = sso_service._normalize_user_info(
+            provider,
+            {
+                "upn": "plainuser",
+                "name": "Test User",
+                "sub": "adfs-789",
+            },
+        )
+        assert result["username"] == "plainuser"
     @pytest.mark.asyncio
     async def test_authenticate_with_none_email_from_adfs(self, sso_service):
         """Test that authentication fails gracefully when ADFS returns None email.
@@ -2230,6 +2371,29 @@ class TestShouldUserBeAdmin:
             mock_settings.sso_entra_admin_groups = []
             result = sso_service._should_user_be_admin("user@google-admin.com", {}, provider)
         assert result is True
+
+    def test_admin_check_invalid_email_format(self, sso_service):
+        """Test admin check handles invalid email format gracefully."""
+        provider = _make_provider()
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_auto_admin_domains = ["admin.com"]
+            mock_settings.sso_github_admin_orgs = []
+            mock_settings.sso_google_admin_domains = []
+            mock_settings.sso_entra_admin_groups = []
+            # Invalid email without @ should not crash
+            result = sso_service._should_user_be_admin("invalid-email", {}, provider)
+        assert result is False
+
+    def test_admin_check_none_email(self, sso_service):
+        """Test admin check handles None email gracefully."""
+        provider = _make_provider()
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_auto_admin_domains = ["admin.com"]
+            mock_settings.sso_github_admin_orgs = []
+            mock_settings.sso_google_admin_domains = []
+            mock_settings.sso_entra_admin_groups = []
+            result = sso_service._should_user_be_admin(None, {}, provider)
+        assert result is False
 
 
 # ---------------------------------------------------------------------------

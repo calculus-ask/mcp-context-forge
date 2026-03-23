@@ -387,6 +387,56 @@ def test_get_predefined_sso_providers_skips_keycloak_when_disabled(monkeypatch):
     assert "auth0" in provider_ids
 
 
+def test_get_predefined_sso_providers_adfs_enabled(monkeypatch):
+    """Test ADFS provider creation when enabled."""
+    # First-Party
+    from mcpgateway.utils.sso_bootstrap import get_predefined_sso_providers
+
+    secret = DummySecret("secret-value")
+    cfg = create_base_sso_config(
+        sso_adfs_enabled=True,
+        sso_adfs_client_id="adfs-client",
+        sso_adfs_client_secret=secret,
+        sso_adfs_authorization_url="https://adfs.corp.com/adfs/oauth2/authorize",
+        sso_adfs_token_url="https://adfs.corp.com/adfs/oauth2/token",
+        sso_adfs_issuer="https://adfs.corp.com/adfs",
+        sso_adfs_scope="openid profile email",
+        sso_adfs_display_name="Corporate ADFS",
+    )
+
+    monkeypatch.setattr("mcpgateway.utils.sso_bootstrap.settings", cfg)
+    providers = get_predefined_sso_providers()
+    provider_ids = {provider["id"] for provider in providers}
+
+    assert "adfs" in provider_ids
+    adfs_provider = next(p for p in providers if p["id"] == "adfs")
+    assert adfs_provider["display_name"] == "Corporate ADFS"
+    assert adfs_provider["authorization_url"] == "https://adfs.corp.com/adfs/oauth2/authorize"
+
+
+def test_get_predefined_sso_providers_adfs_default_display_name(monkeypatch):
+    """Test ADFS provider uses default display name when not specified."""
+    # First-Party
+    from mcpgateway.utils.sso_bootstrap import get_predefined_sso_providers
+
+    secret = DummySecret("secret-value")
+    cfg = create_base_sso_config(
+        sso_adfs_enabled=True,
+        sso_adfs_client_id="adfs-client",
+        sso_adfs_client_secret=secret,
+        sso_adfs_authorization_url="https://adfs.corp.com/adfs/oauth2/authorize",
+        sso_adfs_token_url="https://adfs.corp.com/adfs/oauth2/token",
+        sso_adfs_display_name=None,
+    )
+
+    monkeypatch.setattr("mcpgateway.utils.sso_bootstrap.settings", cfg)
+    providers = get_predefined_sso_providers()
+    
+    adfs_provider = next((p for p in providers if p["id"] == "adfs"), None)
+    assert adfs_provider is not None
+    assert adfs_provider["display_name"] == "ADFS Login"
+
+
 class TestSSOBootstrapAsync:
     """Test async SSO bootstrap functionality."""
 
@@ -581,6 +631,59 @@ class TestSSOBootstrapAsync:
 
                 # Should not call get_predefined_sso_providers when SSO is disabled
                 mock_get_providers.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_disables_providers_not_in_config(self, capsys):
+        """Test that bootstrap_sso_providers disables providers not in environment config."""
+        # First-Party
+        from mcpgateway.utils.sso_bootstrap import bootstrap_sso_providers
+
+        mock_db = MagicMock()
+        
+        # Mock an existing enabled provider that's not in the new config
+        mock_old_provider = MagicMock()
+        mock_old_provider.id = "old-provider"
+        mock_old_provider.display_name = "Old Provider"
+        mock_old_provider.is_enabled = True
+        
+        mock_sso_service = MagicMock()
+        mock_sso_service.list_all_providers.return_value = [mock_old_provider]
+        mock_sso_service.get_provider.return_value = None
+        mock_sso_service.get_provider_by_name.return_value = None
+        mock_sso_service.update_provider = AsyncMock()
+        mock_sso_service.create_provider = AsyncMock()
+
+        # New config only has "new-provider", so "old-provider" should be disabled
+        provider_config = {
+            "id": "new-provider",
+            "name": "new",
+            "display_name": "New Provider",
+            "provider_type": "oauth2",
+            "client_id": "new-client",
+            "client_secret": "new-secret",
+            "authorization_url": "https://auth.example.com/authorize",
+            "token_url": "https://auth.example.com/token",
+            "userinfo_url": "https://auth.example.com/userinfo",
+            "scope": "openid email",
+        }
+
+        with patch("mcpgateway.utils.sso_bootstrap.settings") as mock_settings:
+            mock_settings.sso_enabled = True
+
+            with patch("mcpgateway.utils.sso_bootstrap.get_predefined_sso_providers", return_value=[provider_config]):
+                with patch("mcpgateway.db.get_db", return_value=iter([mock_db])):
+                    with patch("mcpgateway.services.sso_service.SSOService", return_value=mock_sso_service):
+                        await bootstrap_sso_providers()
+
+        # Verify old provider was disabled
+        assert mock_sso_service.update_provider.call_count == 1
+        call_args = mock_sso_service.update_provider.call_args[0]
+        assert call_args[0] == "old-provider"
+        assert call_args[1] == {"is_enabled": False}
+        
+        captured = capsys.readouterr().out
+        assert "Disabled SSO provider" in captured
+        assert "old-provider" in captured
 
     @pytest.mark.asyncio
     async def test_bootstrap_skips_when_no_providers(self):
