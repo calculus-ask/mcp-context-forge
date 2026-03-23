@@ -215,7 +215,7 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite:///./mcp.db",
         description=(
-            "Database connection URL. Supports SQLite, PostgreSQL, MySQL/MariaDB. "
+            "Database connection URL. Supports SQLite (dev) and PostgreSQL (production). "
             "For PostgreSQL with custom schema, use the 'options' query parameter: "
             "postgresql://user:pass@host:5432/db?options=-c%20search_path=schema_name "
             "(See Issue #1535 for details)"
@@ -327,6 +327,8 @@ class Settings(BaseSettings):
     sso_okta_client_id: Optional[str] = Field(default=None, description="Okta client ID")
     sso_okta_client_secret: Optional[SecretStr] = Field(default=None, description="Okta client secret")
     sso_okta_issuer: Optional[str] = Field(default=None, description="Okta issuer URL")
+    sso_okta_scope: str = Field(default="openid profile email", description="Okta OIDC scopes (space-separated)")
+    okta_group_mapping: Optional[str] = Field(default=None, description="JSON mapping of Okta group names to team UUIDs")
 
     sso_keycloak_enabled: bool = Field(default=False, description="Enable Keycloak OIDC authentication")
     sso_keycloak_base_url: Optional[str] = Field(default=None, description="Keycloak base URL (e.g., https://keycloak.example.com)")
@@ -999,7 +1001,7 @@ class Settings(BaseSettings):
 
             # Warn about SQLite in production
             if v.startswith("sqlite"):
-                logger.info("Using SQLite database. Consider PostgreSQL or MySQL for production.")
+                logger.info("Using SQLite database. Consider PostgreSQL for production.")
 
         return v
 
@@ -1059,7 +1061,7 @@ class Settings(BaseSettings):
 
         # Database warnings
         if self.database_url.startswith("sqlite") and not self.dev_mode:
-            warnings.append("💾 SQLite database in use - consider PostgreSQL/MySQL for production")
+            warnings.append("💾 SQLite database in use - consider PostgreSQL for production")
 
         # Rate limiting warnings
         if self.tool_rate_limit > 1000:
@@ -1571,6 +1573,10 @@ class Settings(BaseSettings):
     tool_rate_limit: int = 100  # requests per minute
     tool_concurrent_limit: int = 10
 
+    # Content Security - Size Limits
+    content_max_resource_size: int = Field(default=102400, ge=1024, le=10485760, description="Maximum size in bytes for resource content (default: 100KB)")  # 100KB  # Minimum 1KB  # Maximum 10MB
+    content_max_prompt_size: int = Field(default=10240, ge=512, le=1048576, description="Maximum size in bytes for prompt templates (default: 10KB)")  # 10KB  # Minimum 512 bytes  # Maximum 1MB
+
     # MCP Session Pool - reduces per-request latency from ~20ms to ~1-2ms
     # Disabled by default for safety. Enable explicitly in production after testing.
     mcp_session_pool_enabled: bool = False
@@ -1681,7 +1687,7 @@ class Settings(BaseSettings):
     default_roots: List[str] = []
 
     # Database
-    db_driver: str = "mariadb+mariadbconnector"
+    db_driver: str = "postgresql+psycopg"
     db_pool_size: int = 200
     db_max_overflow: int = 10
     db_pool_timeout: int = 30

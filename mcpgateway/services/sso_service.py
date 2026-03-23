@@ -1331,6 +1331,17 @@ class SSOService:
                     if claim in keycloak_id_token_claims and claim not in user_data:
                         user_data[claim] = keycloak_id_token_claims[claim]
 
+            # For generic OIDC providers (including Okta, IBM Verify, and any custom
+            # provider), merge groups and roles claims from the verified id_token when
+            # the userinfo response does not already contain them.  Many OIDC providers
+            # (e.g. Okta, JumpCloud) only include group claims in the id_token.
+            if provider.id not in ("github", "google", "keycloak", "entra") and verified_id_token_claims:
+                metadata = provider.provider_metadata or {}
+                groups_claim = metadata.get("groups_claim", "groups")
+                for claim in {groups_claim, "roles"}:
+                    if claim in verified_id_token_claims and claim not in user_data:
+                        user_data[claim] = verified_id_token_claims[claim]
+
             # Normalize user info across providers
             return self._normalize_user_info(provider, user_data)
 
@@ -1430,6 +1441,24 @@ class SSOService:
 
         # Handle IBM Verify provider
         if provider.id == "ibm_verify":
+            metadata = provider.provider_metadata or {}
+            groups_claim = metadata.get("groups_claim", "groups")
+            groups: list[str] = []
+
+            if groups_claim in user_data:
+                groups_value = user_data.get(groups_claim, [])
+                if isinstance(groups_value, list):
+                    groups.extend(g for g in groups_value if isinstance(g, str))
+                elif isinstance(groups_value, str):
+                    groups.append(groups_value)
+
+            if "roles" in user_data:
+                roles_value = user_data.get("roles", [])
+                if isinstance(roles_value, list):
+                    groups.extend(r for r in roles_value if isinstance(r, str))
+                elif isinstance(roles_value, str):
+                    groups.append(roles_value)
+
             ibm_normalized: Dict[str, Any] = {
                 "email": user_data.get("email"),
                 "full_name": user_data.get("name"),
@@ -1437,6 +1466,7 @@ class SSOService:
                 "provider_id": user_data.get("sub"),
                 "username": user_data.get("preferred_username") or user_data.get("email", "").split("@")[0],
                 "provider": "ibm_verify",
+                "groups": list(set(groups)),
             }
             if "email_verified" in user_data:
                 ibm_normalized["email_verified"] = user_data["email_verified"]
@@ -1444,6 +1474,25 @@ class SSOService:
 
         # Handle Okta provider
         if provider.id == "okta":
+            metadata = provider.provider_metadata or {}
+            groups_claim = metadata.get("groups_claim", "groups")
+            groups: list[str] = []
+
+            if groups_claim in user_data:
+                groups_value = user_data.get(groups_claim, [])
+                if isinstance(groups_value, list):
+                    groups.extend(g for g in groups_value if isinstance(g, str))
+                elif isinstance(groups_value, str):
+                    groups.append(groups_value)
+
+            # Merge roles claim into groups (same pattern as Entra ID)
+            if "roles" in user_data:
+                roles_value = user_data.get("roles", [])
+                if isinstance(roles_value, list):
+                    groups.extend(r for r in roles_value if isinstance(r, str))
+                elif isinstance(roles_value, str):
+                    groups.append(roles_value)
+
             okta_normalized: Dict[str, Any] = {
                 "email": user_data.get("email"),
                 "full_name": user_data.get("name"),
@@ -1451,6 +1500,7 @@ class SSOService:
                 "provider_id": user_data.get("sub"),
                 "username": user_data.get("preferred_username") or user_data.get("email", "").split("@")[0],
                 "provider": "okta",
+                "groups": list(set(groups)),
             }
             if "email_verified" in user_data:
                 okta_normalized["email_verified"] = user_data["email_verified"]
@@ -1664,6 +1714,24 @@ class SSOService:
         # _is_email_verified_claim's absent-means-pass-through logic applies correctly.
         # Injecting None (via .get()) when the key is missing would cause the key to
         # be present in the dict with a falsy value, silently blocking login.
+        metadata = provider.provider_metadata or {}
+        groups_claim = metadata.get("groups_claim", "groups")
+        groups: list[str] = []
+        if groups_claim in user_data:
+            gc = user_data.get(groups_claim, [])
+            if isinstance(gc, list):
+                groups = [g for g in gc if isinstance(g, str)]
+            elif isinstance(gc, str):
+                groups = [gc]
+
+        # Merge roles claim into groups (same pattern as Entra ID)
+        if "roles" in user_data:
+            roles_value = user_data.get("roles", [])
+            if isinstance(roles_value, list):
+                groups.extend(r for r in roles_value if isinstance(r, str))
+            elif isinstance(roles_value, str):
+                groups.append(roles_value)
+
         generic_normalized: Dict[str, Any] = {
             "email": user_data.get("email"),
             "full_name": user_data.get("name"),
@@ -1671,6 +1739,7 @@ class SSOService:
             "provider_id": user_data.get("sub"),
             "username": user_data.get("preferred_username") or user_data.get("email", "").split("@")[0],
             "provider": provider.id,
+            "groups": list(set(groups)),
         }
         if "email_verified" in user_data:
             generic_normalized["email_verified"] = user_data["email_verified"]
