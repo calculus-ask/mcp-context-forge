@@ -2321,4 +2321,3 @@ class SSOService:
                         f"Database rollback failed after role assignment error for {SecurityValidator.sanitize_log_message(user_email)}: {rollback_error}. Aborting remaining role assignments."
                     )
                     break
-
