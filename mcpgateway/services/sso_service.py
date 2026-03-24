@@ -2088,23 +2088,24 @@ class SSOService:
         Returns:
             True if user should be admin, False otherwise
         """
-        # Validate email format before attempting domain extraction
+        # Validate email format - reject admin checks for invalid emails
+        # Security: Users with invalid emails should never be granted admin privileges
         if not email or "@" not in email:
-            logger.warning(f"Invalid email format for admin check: {email!r}")
-            # Continue with other checks that don't require domain
-        else:
-            # Check domain-based admin assignment
-            domain = email.split("@")[1].lower()
-            if domain in [d.lower() for d in settings.sso_auto_admin_domains]:
+            logger.warning(f"Invalid email format for admin check: {email!r}. Rejecting admin privilege evaluation.")
+            return False
+
+        # Check domain-based admin assignment
+        domain = email.split("@")[1].lower()
+        if domain in [d.lower() for d in settings.sso_auto_admin_domains]:
+            return True
+
+        # Check provider-specific admin assignment for Google
+        if provider.id == "google" and settings.sso_google_admin_domains:
+            # Check if user's domain is in admin domains
+            if domain in [d.lower() for d in settings.sso_google_admin_domains]:
                 return True
 
-            # Check provider-specific admin assignment for Google
-            if provider.id == "google" and settings.sso_google_admin_domains:
-                # Check if user's domain is in admin domains
-                if domain in [d.lower() for d in settings.sso_google_admin_domains]:
-                    return True
-
-        # Check GitHub admin orgs (doesn't require domain)
+        # Check GitHub admin orgs (requires valid email)
         if provider.id == "github" and settings.sso_github_admin_orgs:
             # For GitHub, we'd need to fetch user's organizations
             # This is a placeholder - in production, you'd make API calls to get orgs
@@ -2112,7 +2113,7 @@ class SSOService:
             if any(org.lower() in [o.lower() for o in settings.sso_github_admin_orgs] for org in github_orgs):
                 return True
 
-        # Check EntraID admin groups (doesn't require domain)
+        # Check EntraID admin groups (requires valid email)
         if provider.id == "entra" and settings.sso_entra_admin_groups:
             user_groups = user_info.get("groups", [])
             if any(group.lower() in [g.lower() for g in settings.sso_entra_admin_groups] for group in user_groups):

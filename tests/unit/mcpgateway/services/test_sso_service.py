@@ -2177,6 +2177,43 @@ class TestShouldUserBeAdmin:
             result = sso_service._should_user_be_admin("user@google-admin.com", {}, provider)
         assert result is True
 
+    def test_invalid_email_rejects_admin_check(self, sso_service):
+        """Security: Invalid emails should never be granted admin privileges."""
+        provider = _make_provider(id="github")
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_auto_admin_domains = ["admin.com"]
+            mock_settings.sso_github_admin_orgs = ["my-org"]
+            mock_settings.sso_google_admin_domains = []
+            mock_settings.sso_entra_admin_groups = []
+            
+            # Test missing email
+            result = sso_service._should_user_be_admin("", {"organizations": ["my-org"]}, provider)
+            assert result is False
+            
+            # Test None email
+            result = sso_service._should_user_be_admin(None, {"organizations": ["my-org"]}, provider)
+            assert result is False
+            
+            # Test email without @ symbol
+            result = sso_service._should_user_be_admin("invalid-email", {"organizations": ["my-org"]}, provider)
+            assert result is False
+
+    def test_invalid_email_rejects_admin_check_entra(self, sso_service):
+        """Security: Invalid emails should never be granted admin privileges via Entra groups."""
+        provider = _make_provider(id="entra")
+        with patch("mcpgateway.services.sso_service.settings") as mock_settings:
+            mock_settings.sso_auto_admin_domains = []
+            mock_settings.sso_github_admin_orgs = []
+            mock_settings.sso_google_admin_domains = []
+            mock_settings.sso_entra_admin_groups = ["admin-group-id"]
+            
+            # Test that even with matching Entra group, invalid email is rejected
+            result = sso_service._should_user_be_admin("", {"groups": ["admin-group-id"]}, provider)
+            assert result is False
+            
+            result = sso_service._should_user_be_admin(None, {"groups": ["admin-group-id"]}, provider)
+            assert result is False
+
 
 # ---------------------------------------------------------------------------
 # Role mapping tests
