@@ -342,10 +342,19 @@ async def handle_sso_callback(
         logger.warning(f"SSO callback error from provider '{provider_id}': {error} - {error_msg}")
 
         # Map common OAuth errors to user-friendly messages
-        if error == "access_denied":
-            return RedirectResponse(url=f"{root_path}/admin/login?error=sso_cancelled", status_code=302)
-        else:
-            return RedirectResponse(url=f"{root_path}/admin/login?error=sso_failed", status_code=302)
+        # Reference: https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1
+        error_mappings = {
+            "access_denied": "sso_cancelled",  # User cancelled authorization
+            "invalid_request": "sso_invalid_request",  # Malformed request
+            "unauthorized_client": "sso_unauthorized",  # Client not authorized
+            "unsupported_response_type": "sso_config_error",  # Configuration issue
+            "invalid_scope": "sso_invalid_scope",  # Requested scope invalid
+            "server_error": "sso_server_error",  # Provider internal error
+            "temporarily_unavailable": "sso_unavailable",  # Provider temporarily down
+        }
+
+        error_code = error_mappings.get(error, "sso_failed")
+        return RedirectResponse(url=f"{root_path}/admin/login?error={error_code}", status_code=302)
 
     # Code is required if no error was returned
     if not code:
