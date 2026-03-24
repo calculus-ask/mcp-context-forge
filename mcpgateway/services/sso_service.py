@@ -1460,7 +1460,8 @@ class SSOService:
                 )
                 return email
             logger.warning(
-                "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. " "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
+                "ADFS UPN in DOMAIN\\username format but no default_email_domain configured. "
+                "Set SSO_ADFS_DEFAULT_EMAIL_DOMAIN env var or provider_metadata.default_email_domain. Raw UPN: %s",
                 SecurityValidator.sanitize_log_message(raw_email_str),
             )
             return None
@@ -2320,3 +2321,4 @@ class SSOService:
                         f"Database rollback failed after role assignment error for {SecurityValidator.sanitize_log_message(user_email)}: {rollback_error}. Aborting remaining role assignments."
                     )
                     break
+
