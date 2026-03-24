@@ -404,6 +404,15 @@ class Settings(BaseSettings):
     sso_auto_create_users: bool = Field(default=True, description="Automatically create users from SSO providers")
     sso_trusted_domains: Annotated[list[str], NoDecode] = Field(default_factory=list, description="Trusted email domains (CSV or JSON list)")
     sso_preserve_admin_auth: bool = Field(default=True, description="Preserve local admin authentication when SSO is enabled")
+    sso_auto_disable_unconfigured_providers: bool = Field(
+        default=False,
+        description=(
+            "Automatically disable SSO providers not present in environment configuration during bootstrap. "
+            "When enabled, providers configured in the database but missing from SSO_*_ENABLED environment variables "
+            "will be disabled. This enforces environment config as the single source of truth. "
+            "Default: false (preserves manually configured providers for backward compatibility)."
+        ),
+    )
 
     # SSO Admin Assignment Settings
     sso_auto_admin_domains: Annotated[list[str], NoDecode] = Field(default_factory=list, description="Admin domains (CSV or JSON list)")

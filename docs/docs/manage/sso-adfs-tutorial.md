@@ -273,5 +273,5 @@ When testing, monitor these log entries:
 ## Additional Resources
 
 - [ADFS OAuth 2.0 Documentation](https://docs.microsoft.com/en-us/windows-server/identity/ad-fs/overview/ad-fs-openid-connect-oauth-flows-scenarios)
-- [MCP Context Forge SSO Documentation](../docs/manage/sso.md)
-- [RBAC Configuration](../docs/manage/rbac.md)
+- [MCP Context Forge SSO Documentation](./sso.md)
+- [RBAC Configuration](./rbac.md)

@@ -374,12 +374,15 @@ async def bootstrap_sso_providers() -> None:
         # Get all existing providers from database
         all_existing_providers = sso_service.list_all_providers()
 
-        # Disable providers that are not in environment config
-        for existing_provider in all_existing_providers:
-            if existing_provider.id not in configured_provider_ids and existing_provider.is_enabled:
-                # Disable provider not in current config
-                await sso_service.update_provider(existing_provider.id, {"is_enabled": False})
-                print(f"🔒 Disabled SSO provider (not in config): {existing_provider.display_name} (ID: {existing_provider.id})")
+        # Disable providers that are not in environment config (if feature flag is enabled)
+        # This behavior is controlled by SSO_AUTO_DISABLE_UNCONFIGURED_PROVIDERS (default: false)
+        # to preserve backward compatibility with manually configured providers.
+        if settings.sso_auto_disable_unconfigured_providers:
+            for existing_provider in all_existing_providers:
+                if existing_provider.id not in configured_provider_ids and existing_provider.is_enabled:
+                    # Disable provider not in current config
+                    await sso_service.update_provider(existing_provider.id, {"is_enabled": False})
+                    print(f"🔒 Disabled SSO provider (not in config): {existing_provider.display_name} (ID: {existing_provider.id})")
 
         # Create or update providers from environment config
         for provider_config in providers:
