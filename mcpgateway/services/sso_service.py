@@ -1198,7 +1198,7 @@ class SSOService:
             )
             return token_response
 
-        logger.error("Token exchange failed for provider %s: HTTP %s - Response: %s", provider.id, response.status_code, response.text[:500] if response.text else "EMPTY")
+        logger.error("Token exchange failed for provider %s: HTTP %s - Response: %s", provider.id, response.status_code, (response.text or "")[:500] or "EMPTY")
 
         return None
 
