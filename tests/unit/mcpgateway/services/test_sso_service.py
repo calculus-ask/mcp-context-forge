@@ -1539,6 +1539,7 @@ class TestNormalization:
         assert result["provider"] == "keycloak"
         assert "admin" in result["groups"]
         assert "my-app:editor" in result["groups"]
+        assert "/team-a" in result["groups"]
 
     def test_normalize_adfs_with_valid_email(self, sso_service):
         """Test ADFS normalization when email claim is already in valid format."""
