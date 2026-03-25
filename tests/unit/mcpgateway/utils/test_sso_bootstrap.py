@@ -70,6 +70,7 @@ def test_get_predefined_sso_providers_multiple(monkeypatch):
         sso_keycloak_role_mappings={"gateway-admin": "platform_admin"},
         sso_keycloak_default_role="viewer",
         sso_keycloak_resolve_team_scope_to_personal_team=True,
+        sso_adfs_enabled=False,
         sso_generic_enabled=True,
         sso_generic_provider_id="authentik",
         sso_generic_display_name=None,
@@ -159,6 +160,7 @@ def test_get_predefined_sso_providers_keycloak_discovery_none_logs_error(monkeyp
         sso_keycloak_username_claim="preferred_username",
         sso_keycloak_email_claim="email",
         sso_keycloak_groups_claim="groups",
+        sso_adfs_enabled=False,
         sso_generic_enabled=False,
         sso_generic_provider_id=None,
         sso_generic_display_name=None,
@@ -219,6 +221,7 @@ def test_get_predefined_sso_providers_keycloak_discovery_exception_logs_error(mo
         sso_keycloak_username_claim="preferred_username",
         sso_keycloak_email_claim="email",
         sso_keycloak_groups_claim="groups",
+        sso_adfs_enabled=False,
         sso_generic_enabled=False,
         sso_generic_provider_id=None,
         sso_generic_display_name=None,
@@ -283,6 +286,7 @@ def test_get_predefined_sso_providers_skips_keycloak_when_disabled(monkeypatch):
         sso_keycloak_username_claim="preferred_username",
         sso_keycloak_email_claim="email",
         sso_keycloak_groups_claim="groups",
+        sso_adfs_enabled=False,
         sso_generic_enabled=True,
         sso_generic_provider_id="auth0",
         sso_generic_display_name="Auth0",
@@ -503,20 +507,32 @@ class TestSSOBootstrapAsync:
 
     @pytest.mark.asyncio
     async def test_bootstrap_skips_when_no_providers(self):
-        """Test that bootstrap_sso_providers returns early when no providers configured."""
+        """Test that bootstrap_sso_providers handles empty provider list correctly."""
         # First-Party
         from mcpgateway.utils.sso_bootstrap import bootstrap_sso_providers
 
         with patch("mcpgateway.utils.sso_bootstrap.settings") as mock_settings:
             mock_settings.sso_enabled = True
+            mock_settings.sso_auto_disable_unconfigured_providers = False
 
             with patch("mcpgateway.utils.sso_bootstrap.get_predefined_sso_providers", return_value=[]):
                 # Patch at the source module since it's imported inside the function
                 with patch("mcpgateway.db.get_db") as mock_get_db:
-                    await bootstrap_sso_providers()
+                    # Mock the DB session
+                    mock_db = MagicMock()
+                    mock_get_db.return_value = iter([mock_db])
+                    
+                    # Mock SSOService at the services module level
+                    with patch("mcpgateway.services.sso_service.SSOService") as mock_sso_service:
+                        mock_service_instance = MagicMock()
+                        mock_service_instance.list_all_providers.return_value = []
+                        mock_sso_service.return_value = mock_service_instance
+                        
+                        await bootstrap_sso_providers()
 
-                    # Should not try to get a DB session when no providers
-                    mock_get_db.assert_not_called()
+                        # Should get DB session but not create any providers
+                        mock_get_db.assert_called_once()
+                        mock_service_instance.list_all_providers.assert_called_once()
 
 
 def test_generic_oidc_includes_jwks_uri_when_configured(monkeypatch):
@@ -549,6 +565,7 @@ def test_generic_oidc_includes_jwks_uri_when_configured(monkeypatch):
         sso_keycloak_enabled=False,
         sso_keycloak_base_url=None,
         sso_keycloak_client_id=None,
+        sso_adfs_enabled=False,
         sso_generic_enabled=True,
         sso_generic_provider_id="keycloak",
         sso_generic_display_name="Keycloak",
@@ -602,6 +619,7 @@ def test_generic_oidc_omits_jwks_uri_when_not_configured(monkeypatch):
         sso_keycloak_enabled=False,
         sso_keycloak_base_url=None,
         sso_keycloak_client_id=None,
+        sso_adfs_enabled=False,
         sso_generic_enabled=True,
         sso_generic_provider_id="auth0",
         sso_generic_display_name="Auth0",
@@ -791,6 +809,7 @@ def test_okta_default_scope_without_group_mapping(monkeypatch):
         sso_keycloak_enabled=False,
         sso_keycloak_base_url=None,
         sso_keycloak_client_id=None,
+        sso_adfs_enabled=False,
         sso_generic_enabled=False,
         sso_generic_provider_id=None,
         sso_generic_client_id=None,
@@ -838,6 +857,7 @@ def test_okta_invalid_group_mapping_json_uses_empty(monkeypatch, caplog):
         sso_keycloak_enabled=False,
         sso_keycloak_base_url=None,
         sso_keycloak_client_id=None,
+        sso_adfs_enabled=False,
         sso_generic_enabled=False,
         sso_generic_provider_id=None,
         sso_generic_client_id=None,
@@ -1040,6 +1060,7 @@ def test_okta_non_dict_group_mapping_uses_empty(monkeypatch, caplog):
         sso_keycloak_enabled=False,
         sso_keycloak_base_url=None,
         sso_keycloak_client_id=None,
+        sso_adfs_enabled=False,
         sso_generic_enabled=False,
         sso_generic_provider_id=None,
         sso_generic_client_id=None,
