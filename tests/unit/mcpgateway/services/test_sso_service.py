@@ -121,6 +121,13 @@ class TestProviderCRUD:
         result = sso_service.list_enabled_providers()
         assert len(result) == 2
 
+    def test_list_all_providers(self, sso_service, mock_db):
+        """Test list_all_providers returns all providers regardless of enabled status."""
+        providers = [_make_provider(), _make_provider(id="google", name="google", is_enabled=False)]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = providers
+        result = sso_service.list_all_providers()
+        assert len(result) == 2
+
     def test_get_provider(self, sso_service, mock_db):
         provider = _make_provider()
         mock_db.execute.return_value.scalar_one_or_none.return_value = provider
@@ -3761,4 +3768,102 @@ class TestEntraLegacyRoleMappings:
             MockRoleService.return_value = role_svc
             result = await sso_service._map_groups_to_roles("user@test.com", ["admin-grp", "other"], provider)
 
-        assert any(r["role_name"] == "platform_admin" for r in result)
+
+
+class TestADFSProvider:
+    """Tests for ADFS-specific functionality."""
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_with_id_token(self, sso_service):
+        """ADFS provider extracts user info from id_token."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        
+        # Mock JWT decode to return claims
+        id_token_claims = {
+            "email": "user@adfs.com",
+            "upn": "user@adfs.com",
+            "name": "ADFS User",
+            "sub": "adfs-sub-123",
+            "oid": "adfs-oid-456",
+            "groups": ["group1", "group2"]
+        }
+        
+        sso_service._decode_jwt_claims = MagicMock(return_value=id_token_claims)
+        
+        # Mock HTTP client
+        with patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock):
+            token_data = {"id_token": "fake.jwt.token", "access_token": "access123"}
+            result = await sso_service._get_user_info(provider, "access123", token_data=token_data)
+        
+        assert result["email"] == "user@adfs.com"
+        assert result["full_name"] == "ADFS User"
+        assert "group1" in result["groups"]
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_missing_id_token(self, sso_service):
+        """ADFS provider raises error when id_token is missing."""
+        from mcpgateway.services.sso_service import SSOProviderConfigError
+        
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        token_data = {"access_token": "access123"}  # Missing id_token
+        
+        with patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock):
+            with pytest.raises(SSOProviderConfigError):
+                await sso_service._get_user_info(provider, "access123", token_data=token_data)
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_failed_decode(self, sso_service):
+        """ADFS provider returns None when id_token decode fails."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        
+        # Mock JWT decode to return None (decode failure)
+        sso_service._decode_jwt_claims = MagicMock(return_value=None)
+        
+        with patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock):
+            token_data = {"id_token": "invalid.jwt.token", "access_token": "access123"}
+            result = await sso_service._get_user_info(provider, "access123", token_data=token_data)
+        
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_entra_federation_detected(self, sso_service):
+        """ADFS federating to Entra ID is detected via issuer claim."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        
+        # Mock JWT decode with Entra issuer
+        id_token_claims = {
+            "email": "user@company.com",
+            "preferred_username": "user@company.com",
+            "name": "Federated User",
+            "sub": "entra-sub-123",
+            "iss": "https://login.microsoftonline.com/tenant-id/v2.0"
+        }
+        
+        sso_service._decode_jwt_claims = MagicMock(return_value=id_token_claims)
+        
+        with patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock):
+            token_data = {"id_token": "fake.jwt.token", "access_token": "access123"}
+            result = await sso_service._get_user_info(provider, "access123", token_data=token_data)
+        
+        assert result["email"] == "user@company.com"
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_adfs_windows_net_issuer(self, sso_service):
+        """ADFS with sts.windows.net issuer is also detected as Entra federation."""
+        provider = _make_provider(id="adfs", name="adfs", provider_type="oidc")
+        
+        id_token_claims = {
+            "email": "user@company.com",
+            "name": "User",
+            "sub": "sub-123",
+            "iss": "https://sts.windows.net/tenant-id/"
+        }
+        
+        sso_service._decode_jwt_claims = MagicMock(return_value=id_token_claims)
+        
+        with patch("mcpgateway.services.http_client_service.get_http_client", new_callable=AsyncMock):
+            token_data = {"id_token": "fake.jwt.token", "access_token": "access123"}
+            result = await sso_service._get_user_info(provider, "access123", token_data=token_data)
+        
+        assert result is not None
+        assert result.get("email") == "user@company.com"

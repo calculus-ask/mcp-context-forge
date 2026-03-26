@@ -1075,3 +1075,6 @@ def test_okta_non_dict_group_mapping_uses_empty(monkeypatch, caplog):
     assert len(providers) == 1
     assert providers[0]["team_mapping"] == {}
     assert any("must be a JSON object" in record.message for record in caplog.records)
+
+
+

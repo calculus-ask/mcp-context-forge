@@ -236,6 +236,24 @@ async def test_handle_sso_callback_disabled(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_sso_callback_missing_code_and_error(monkeypatch: pytest.MonkeyPatch):
+    """Test callback with neither code nor error parameter."""
+    monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
+
+    request = MagicMock()
+    request.scope = {"root_path": ""}
+    request.cookies = {"sso_session_id": "session-1"}
+
+    response = await sso_router.handle_sso_callback(
+        "github", code=None, state="state", error=None, request=request, response=MagicMock(), db=MagicMock()
+    )
+
+    assert isinstance(response, RedirectResponse)
+    assert response.status_code == 302
+    assert "/admin/login?error=sso_failed" in response.headers.get("location", "")
+
+
+@pytest.mark.asyncio
 async def test_handle_sso_callback_user_creation_failed(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(sso_router.settings, "sso_enabled", True)
 
