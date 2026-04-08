@@ -4248,8 +4248,27 @@ class TestVerifyOauthAccessToken:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_oidc_discovery_failure_returns_none(self):
-        """When OIDC discovery fails, verification returns None."""
+    async def test_oidc_discovery_5xx_returns_unavailable(self):
+        """When OIDC discovery returns 5xx, verification returns OAUTH_VERIFY_UNAVAILABLE."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import OAUTH_VERIFY_UNAVAILABLE, verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+
+        private_key, _ = self._generate_rsa_keypair()
+        token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await verify_oauth_access_token(token, [self.ISSUER])
+
+        assert result is OAUTH_VERIFY_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_oidc_discovery_4xx_returns_none(self):
+        """When OIDC discovery returns 4xx (not found), verification returns None (auth failure)."""
         # First-Party
         from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
 
@@ -4257,7 +4276,7 @@ class TestVerifyOauthAccessToken:
         token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
 
         mock_resp = MagicMock()
-        mock_resp.status_code = 500
+        mock_resp.status_code = 404
         mock_http = AsyncMock()
         mock_http.get.return_value = mock_resp
 
@@ -4343,3 +4362,151 @@ class TestVerifyOauthAccessToken:
             result = await verify_oauth_access_token(token, [self.ISSUER])  # no expected_audience
 
         assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_discovery_cache_expired_refetches(self):
+        """Expired OIDC metadata cache triggers a re-fetch."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import _discover_oidc_metadata, _oauth_oidc_metadata_cache  # pylint: disable=import-outside-toplevel
+
+        # Seed cache with an expired entry (timestamp far in the past)
+        _oauth_oidc_metadata_cache[self.ISSUER.rstrip("/")] = (0.0, {"issuer": self.ISSUER, "jwks_uri": self.JWKS_URI})
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"issuer": self.ISSUER, "jwks_uri": self.JWKS_URI}
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await _discover_oidc_metadata(self.ISSUER)
+
+        assert result is not None
+        # Must have re-fetched (not used stale cache)
+        mock_http.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_dict_metadata_returns_none(self):
+        """OIDC discovery returning non-dict metadata is rejected."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import _discover_oidc_metadata  # pylint: disable=import-outside-toplevel
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = "not-a-dict"
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await _discover_oidc_metadata(self.ISSUER)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_http_exception_returns_unavailable(self):
+        """OIDC discovery network exception returns OAUTH_VERIFY_UNAVAILABLE (infra failure)."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import OAUTH_VERIFY_UNAVAILABLE, _discover_oidc_metadata  # pylint: disable=import-outside-toplevel
+
+        mock_http = AsyncMock()
+        mock_http.get.side_effect = ConnectionError("network down")
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await _discover_oidc_metadata(self.ISSUER)
+
+        assert result is OAUTH_VERIFY_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_missing_jwks_uri_returns_none(self):
+        """Token verification returns None when OIDC metadata has no jwks_uri."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+
+        private_key, _ = self._generate_rsa_keypair()
+        token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"issuer": self.ISSUER}  # no jwks_uri
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await verify_oauth_access_token(token, [self.ISSUER])
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_jwks_client_created_on_cache_miss(self):
+        """PyJWKClient is created and cached when not already in cache."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+
+        private_key, public_key = self._generate_rsa_keypair()
+        token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "email": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"issuer": self.ISSUER, "jwks_uri": self.JWKS_URI}
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        mock_signing_key = MagicMock()
+        mock_signing_key.key = public_key
+        mock_jwks_client = MagicMock()
+        mock_jwks_client.get_signing_key_from_jwt.return_value = mock_signing_key
+
+        with (
+            patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)),
+            patch("mcpgateway.utils.verify_credentials._oauth_jwks_client_cache", {}),
+            patch("jwt.PyJWKClient", return_value=mock_jwks_client) as mock_constructor,
+        ):
+            result = await verify_oauth_access_token(token, [self.ISSUER])
+
+        assert result is not None
+        mock_constructor.assert_called_once_with(self.JWKS_URI)
+
+    @pytest.mark.asyncio
+    async def test_discovery_issuer_mismatch_rejected(self):
+        """Token is rejected when discovered metadata issuer doesn't match queried issuer."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+
+        private_key, _ = self._generate_rsa_keypair()
+        token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        # Discovery document returns a DIFFERENT issuer than what we queried
+        mock_resp.json.return_value = {"issuer": "https://evil.example.com/", "jwks_uri": "https://evil.example.com/jwks"}
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)):
+            result = await verify_oauth_access_token(token, [self.ISSUER])
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_jwks_uri_ssrf_rejected(self):
+        """Token is rejected when JWKS URI points to an internal/private address."""
+        # First-Party
+        from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+
+        private_key, _ = self._generate_rsa_keypair()
+        token = self._sign_token({"iss": self.ISSUER, "sub": "user@example.com", "exp": 9999999999, "iat": 1700000000}, private_key)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        # Discovery document has a valid issuer but an internal JWKS URI
+        mock_resp.json.return_value = {"issuer": self.ISSUER, "jwks_uri": "http://169.254.169.254/jwks"}
+        mock_http = AsyncMock()
+        mock_http.get.return_value = mock_resp
+
+        with (
+            patch("mcpgateway.services.http_client_service.get_http_client", AsyncMock(return_value=mock_http)),
+            patch("mcpgateway.common.validators.validate_core_url", side_effect=ValueError("SSRF blocked")),
+        ):
+            result = await verify_oauth_access_token(token, [self.ISSUER])
+
+        assert result is None

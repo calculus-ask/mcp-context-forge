@@ -1011,9 +1011,12 @@ async def _ensure_rpc_permission(user, db: Session, permission: str, method: str
         return
 
     # Layer 2: RBAC check
-    # Session tokens have no explicit team_id, so check across all team-scoped roles.
-    # Mirrors the @require_permission decorator's check_any_team fallback (rbac.py:562-576).
-    check_any_team = isinstance(user, dict) and user.get("token_use") == "session"
+    # Session tokens and OAuth access tokens have no explicit team_id, so
+    # check across all team-scoped roles.  The internal MCP forwarded user
+    # payload does not carry ``teams``, so the token_use allowlist is the
+    # sole trigger here (mirrors @require_permission's check_any_team).
+    _token_use = user.get("token_use") if isinstance(user, dict) else None
+    check_any_team = isinstance(user, dict) and _token_use in ("session", "oauth_access_token")  # nosec B105
     checker = PermissionChecker(_build_rpc_permission_user(user, db))
     if not await checker.has_permission(permission, check_any_team=check_any_team):
         logger.warning("RPC permission denied (RBAC): method=%s, required=%s", method, permission)
@@ -11019,6 +11022,7 @@ app.include_router(export_import_router)
 
 # Tool plugin bindings router
 try:
+    # First-Party
     from mcpgateway.routers.tool_plugin_bindings import router as tool_plugin_bindings_router  # pylint: disable=import-outside-toplevel
 
     app.include_router(tool_plugin_bindings_router)

@@ -455,7 +455,7 @@ preview = true
 # Match thresholds from .pylintrc [DESIGN] and [REFACTORING] sections
 max-args = 12               # .pylintrc max-args
 max-positional-args = 16    # .pylintrc max-positional-arguments
-max-returns = 16            # .pylintrc max-returns
+max-returns = 20            # .pylintrc max-returns
 max-bool-expr = 10          # .pylintrc max-bool-expr
 max-branches = 12           # .pylintrc max-branches (ignored; PLR0912 disabled)
 max-statements = 50         # .pylintrc max-statements (ignored; PLR0915 disabled)

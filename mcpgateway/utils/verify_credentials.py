@@ -1226,6 +1226,10 @@ async def require_admin_auth(
 # OAuth access token verification via JWKS (RFC 9728 — Virtual Server MCP auth)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Sentinel indicating an infrastructure failure (OIDC/JWKS/network) rather
+# than an invalid token.  Callers use this to return 503 instead of 401.
+OAUTH_VERIFY_UNAVAILABLE: Dict[str, Any] = {"__unavailable__": True}
+
 # Module-level caches for OIDC discovery and JWKS clients.
 # Same caching pattern used in sso_service.py for id_token verification.
 _oauth_oidc_metadata_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -1250,12 +1254,28 @@ async def _discover_oidc_metadata(issuer: str) -> Optional[Dict[str, Any]]:
             return metadata
         _oauth_oidc_metadata_cache.pop(normalized, None)
 
+    # SSRF: validate the issuer URL before making the outbound discovery request.
+    # authorization_servers comes from the unvalidated oauth_config dict, so an
+    # admin with servers.create could point discovery at an internal host.
+    try:
+        # First-Party
+        from mcpgateway.common.validators import validate_core_url  # pylint: disable=import-outside-toplevel
+
+        validate_core_url(normalized, "OAuth issuer URL")
+    except (ValueError, Exception) as exc:
+        logger.warning("OAuth issuer URL failed SSRF validation: %s (url=%s)", exc, normalized)
+        return None
+
     # First-Party
     from mcpgateway.services.http_client_service import get_http_client  # pylint: disable=import-outside-toplevel
 
     try:
         client = await get_http_client()
         resp = await client.get(f"{normalized}/.well-known/openid-configuration", timeout=10)
+        if resp.status_code >= 500:
+            # IdP infrastructure error — propagate as unavailable so caller can 503
+            logger.warning("OAuth OIDC discovery unavailable for %s: HTTP %s", normalized, resp.status_code)
+            return OAUTH_VERIFY_UNAVAILABLE
         if resp.status_code != 200:
             logger.warning("OAuth OIDC discovery failed for %s: HTTP %s", normalized, resp.status_code)
             return None
@@ -1265,8 +1285,9 @@ async def _discover_oidc_metadata(issuer: str) -> Optional[Dict[str, Any]]:
         _oauth_oidc_metadata_cache[normalized] = (monotonic(), metadata)
         return metadata
     except Exception as exc:
+        # Network errors (timeout, DNS, connection refused) are infra failures
         logger.warning("OAuth OIDC discovery request failed for %s: %s", normalized, exc)
-        return None
+        return OAUTH_VERIFY_UNAVAILABLE
 
 
 async def verify_oauth_access_token(token: str, authorization_servers: List[str], *, expected_audience: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1284,7 +1305,9 @@ async def verify_oauth_access_token(token: str, authorization_servers: List[str]
         expected_audience: Optional audience to validate against (typically the OAuth client_id).
 
     Returns:
-        Verified claims dict on success, None on failure.
+        Verified claims dict on success, ``None`` for invalid/rejected tokens
+        (caller should 401), or ``OAUTH_VERIFY_UNAVAILABLE`` for infrastructure
+        failures (caller should 503).
     """
     try:
         unverified = jwt.decode(token, options={"verify_signature": False})
@@ -1304,12 +1327,34 @@ async def verify_oauth_access_token(token: str, authorization_servers: List[str]
 
     # Discover OIDC metadata and resolve JWKS URI
     metadata = await _discover_oidc_metadata(normalized_issuer)
+    if metadata is OAUTH_VERIFY_UNAVAILABLE:
+        return OAUTH_VERIFY_UNAVAILABLE
     if not metadata:
+        return None
+
+    # RFC 8414 §3.3: the discovered issuer MUST match the queried issuer to
+    # prevent a compromised discovery endpoint from redirecting to a different
+    # issuer's JWKS.
+    discovered_issuer = metadata.get("issuer", "").rstrip("/") if isinstance(metadata.get("issuer"), str) else ""
+    if discovered_issuer != normalized_issuer:
+        logger.warning("OIDC discovery issuer mismatch: expected %s, got %s", normalized_issuer, discovered_issuer)
         return None
 
     jwks_uri = metadata.get("jwks_uri")
     if not isinstance(jwks_uri, str) or not jwks_uri.strip():
         logger.warning("No jwks_uri in OIDC metadata for issuer %s", normalized_issuer)
+        return None
+
+    # SSRF: validate jwks_uri before allowing PyJWKClient to fetch from it.
+    # PyJWKClient uses urllib.request directly (not the shared HTTP client),
+    # so application-level SSRF protections do not apply unless we check here.
+    try:
+        # First-Party
+        from mcpgateway.common.validators import validate_core_url  # pylint: disable=import-outside-toplevel
+
+        validate_core_url(jwks_uri.strip(), "JWKS URI")
+    except (ValueError, Exception) as exc:
+        logger.warning("JWKS URI failed SSRF validation for issuer %s: %s (uri=%s)", normalized_issuer, exc, jwks_uri)
         return None
 
     try:
@@ -1333,3 +1378,7 @@ async def verify_oauth_access_token(token: str, authorization_servers: List[str]
     except jwt.PyJWTError as exc:
         logger.warning("OAuth access token verification failed (issuer=%s): %s", normalized_issuer, exc)
         return None
+    except Exception as exc:
+        # Network / JWKS fetch errors (urllib timeout, connection refused, etc.)
+        logger.warning("OAuth JWKS fetch/verification unavailable (issuer=%s): %s", normalized_issuer, exc)
+        return OAUTH_VERIFY_UNAVAILABLE

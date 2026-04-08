@@ -13550,3 +13550,534 @@ async def test_handle_streamable_http_initialize_span_exits_with_exception(monke
     assert exc_type is ValueError
     assert isinstance(exc_val, ValueError)
     assert str(exc_val) == "initialize failed"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OAuth access token verification via JWKS — _auth_jwt routing & _try_oauth_access_token
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_oauth_handler(path="/servers/srv-1/mcp"):
+    """Create an auth handler with a server-scoped path for OAuth tests."""
+    return tr._StreamableHttpAuthHandler(
+        scope={"type": "http", "path": path, "headers": []},
+        receive=AsyncMock(),
+        send=AsyncMock(),
+    )
+
+
+def _make_server_record(oauth_enabled=True, oauth_config=None):
+    """Create a mock server DB record for OAuth tests."""
+    server = MagicMock()
+    server.id = "srv-1"
+    server.oauth_enabled = oauth_enabled
+    server.oauth_config = oauth_config or {
+        "authorization_servers": ["https://idp.example.com/realms/test"],
+        "client_id": "my-client",
+    }
+    return server
+
+
+def _make_user_record(email="user@example.com", is_admin=False, is_active=True):
+    """Create a mock user DB record for OAuth tests."""
+    return SimpleNamespace(email=email, is_admin=is_admin, is_active=is_active)
+
+
+@pytest.mark.asyncio
+async def test_auth_jwt_routes_idp_token_to_oauth_path():
+    """_auth_jwt routes non-CF issuer tokens to _try_oauth_access_token."""
+    handler = _make_oauth_handler()
+
+    # Third-Party
+    import jwt as _jwt  # pylint: disable=import-outside-toplevel
+
+    token = _jwt.encode({"iss": "https://idp.example.com", "sub": "user"}, "secret", algorithm="HS256")
+
+    mock_try_oauth = AsyncMock(return_value=True)
+    with (
+        patch.object(tr.settings, "jwt_issuer", "mcpgateway"),
+        patch.object(tr._StreamableHttpAuthHandler, "_try_oauth_access_token", mock_try_oauth),
+    ):
+        result = await handler._auth_jwt(token=token)
+
+    assert result is True
+    mock_try_oauth.assert_awaited_once_with(token)
+
+
+@pytest.mark.asyncio
+async def test_auth_jwt_rejects_idp_token_when_not_oauth_server():
+    """_auth_jwt returns 401 when IdP token targets a non-OAuth server (_try_oauth returns None)."""
+    handler = _make_oauth_handler()
+
+    # Third-Party
+    import jwt as _jwt  # pylint: disable=import-outside-toplevel
+
+    token = _jwt.encode({"iss": "https://idp.example.com", "sub": "user"}, "secret", algorithm="HS256")
+
+    mock_try_oauth = AsyncMock(return_value=None)
+    mock_send_error = AsyncMock(return_value=False)
+    with (
+        patch.object(tr.settings, "jwt_issuer", "mcpgateway"),
+        patch.object(tr._StreamableHttpAuthHandler, "_try_oauth_access_token", mock_try_oauth),
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+    ):
+        result = await handler._auth_jwt(token=token)
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    call_kwargs = mock_send_error.call_args.kwargs
+    assert "Invalid authentication credentials" in call_kwargs.get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_auth_jwt_malformed_token_falls_through_to_verify_credentials():
+    """Malformed (non-JWT) tokens skip OAuth routing and reach verify_credentials."""
+    handler = _make_oauth_handler()
+
+    jwt_payload = {"sub": "user@example.com", "is_admin": True, "token_use": "api"}  # nosec B105
+
+    with (
+        patch.object(tr.settings, "jwt_issuer", "mcpgateway"),
+        patch("mcpgateway.transports.streamablehttp_transport.verify_credentials", AsyncMock(return_value=jwt_payload)),
+        patch("mcpgateway.auth.normalize_token_teams", lambda payload: None),
+    ):
+        result = await handler._auth_jwt(token="fake-token")
+
+    assert result is True
+    ctx = user_context_var.get()
+    assert ctx["email"] == "user@example.com"
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_happy_path():
+    """_try_oauth_access_token succeeds for valid token + oauth_enabled server + registered user."""
+    handler = _make_oauth_handler()
+    server = _make_server_record()
+    user = _make_user_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+        patch("mcpgateway.auth._resolve_teams_from_db", AsyncMock(return_value=["team-a"])),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is True
+    ctx = user_context_var.get()
+    assert ctx["email"] == "user@example.com"
+    assert ctx["teams"] == ["team-a"]
+    assert ctx["is_authenticated"] is True
+    assert ctx["auth_method"] == "oauth"
+    assert ctx["token_use"] == "oauth_access_token"  # nosec B105
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_admin_user_gets_none_teams():
+    """Admin users get teams=None (admin bypass) from _try_oauth_access_token."""
+    handler = _make_oauth_handler()
+    server = _make_server_record()
+    user = _make_user_record(is_admin=True)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "admin@example.com", "sub": "admin@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is True
+    ctx = user_context_var.get()
+    assert ctx["email"] == "admin@example.com"
+    assert ctx["teams"] is None
+    assert ctx["is_admin"] is True
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_none_when_no_server_match():
+    """_try_oauth_access_token returns None when path doesn't match a server route."""
+    handler = _make_oauth_handler(path="/some/other/path")
+    result = await handler._try_oauth_access_token("idp-token")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_none_when_server_not_found():
+    """_try_oauth_access_token returns None when server doesn't exist in DB."""
+    handler = _make_oauth_handler()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = None
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    with patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_none_when_oauth_not_enabled():
+    """_try_oauth_access_token returns None when server.oauth_enabled is False."""
+    handler = _make_oauth_handler()
+    server = _make_server_record(oauth_enabled=False)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    with patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_none_when_no_authorization_servers():
+    """_try_oauth_access_token returns None when oauth_config has no authorization_servers."""
+    handler = _make_oauth_handler()
+    server = _make_server_record(oauth_config={"client_id": "my-client"})
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    with patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_on_db_error():
+    """_try_oauth_access_token returns False and sends 503 on SQLAlchemy error."""
+    # Third-Party
+    from sqlalchemy.exc import OperationalError  # pylint: disable=import-outside-toplevel
+
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", side_effect=OperationalError("connection", {}, Exception("db down"))),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert mock_send_error.call_args.kwargs.get("status_code") == 503
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_when_token_verification_fails():
+    """_try_oauth_access_token returns False on invalid OAuth token (JWKS verification failure)."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=None)),
+    ):
+        result = await handler._try_oauth_access_token("bad-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert "Invalid OAuth access token" in mock_send_error.call_args.kwargs.get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_503_when_verification_unavailable():
+    """_try_oauth_access_token returns 503 when IdP/JWKS infrastructure is down."""
+    # First-Party
+    from mcpgateway.utils.verify_credentials import OAUTH_VERIFY_UNAVAILABLE  # pylint: disable=import-outside-toplevel
+
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=OAUTH_VERIFY_UNAVAILABLE)),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert mock_send_error.call_args.kwargs.get("status_code") == 503
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_when_email_claim_missing():
+    """_try_oauth_access_token returns False when token lacks a valid email claim."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    # Token verified but has no email-like claim
+    verified_claims = {"sub": "no-email-user", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert "email" in mock_send_error.call_args.kwargs.get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_when_user_not_registered():
+    """_try_oauth_access_token returns False when user doesn't exist in ContextForge DB."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "unknown@example.com", "sub": "unknown@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=None)),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert "not registered" in mock_send_error.call_args.kwargs.get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_when_user_inactive():
+    """_try_oauth_access_token returns False when user account is disabled."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+    user = _make_user_record(is_active=False)
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert "disabled" in mock_send_error.call_args.kwargs.get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_uses_preferred_username_fallback():
+    """_try_oauth_access_token falls back to preferred_username when email claim is absent."""
+    handler = _make_oauth_handler()
+    server = _make_server_record()
+    user = _make_user_record(email="dev@example.com")
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"preferred_username": "dev@example.com", "sub": "some-uuid", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+        patch("mcpgateway.auth._resolve_teams_from_db", AsyncMock(return_value=["team-b"])),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is True
+    ctx = user_context_var.get()
+    assert ctx["email"] == "dev@example.com"
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_uses_single_authorization_server_fallback():
+    """_try_oauth_access_token supports legacy single authorization_server config."""
+    handler = _make_oauth_handler()
+    server = _make_server_record(oauth_config={"authorization_server": "https://idp.example.com/realms/test", "client_id": "my-client"})
+    user = _make_user_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)) as mock_verify,
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+        patch("mcpgateway.auth._resolve_teams_from_db", AsyncMock(return_value=[])),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is True
+    # Verify the single authorization_server was passed to verify_oauth_access_token
+    mock_verify.assert_awaited_once()
+    call_args = mock_verify.call_args
+    assert call_args.args[1] == ["https://idp.example.com/realms/test"]
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_sets_trace_context():
+    """_try_oauth_access_token sets observability trace context on success."""
+    # First-Party
+    from mcpgateway.utils.trace_context import clear_trace_context, get_trace_auth_method, get_trace_user_email  # pylint: disable=import-outside-toplevel
+
+    clear_trace_context()
+
+    handler = _make_oauth_handler()
+    server = _make_server_record()
+    user = _make_user_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+        patch("mcpgateway.auth._resolve_teams_from_db", AsyncMock(return_value=["team-a"])),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is True
+    assert get_trace_user_email() == "user@example.com"
+    assert get_trace_auth_method() == "oauth"
+    clear_trace_context()
+
+
+@pytest.mark.asyncio
+async def test_auth_jwt_returns_false_when_oauth_verification_fails():
+    """_auth_jwt returns False when _try_oauth returns False (error already sent)."""
+    handler = _make_oauth_handler()
+
+    # Third-Party
+    import jwt as _jwt  # pylint: disable=import-outside-toplevel
+
+    token = _jwt.encode({"iss": "https://idp.example.com", "sub": "user"}, "secret", algorithm="HS256")
+
+    mock_try_oauth = AsyncMock(return_value=False)
+    with (
+        patch.object(tr.settings, "jwt_issuer", "mcpgateway"),
+        patch.object(tr._StreamableHttpAuthHandler, "_try_oauth_access_token", mock_try_oauth),
+    ):
+        result = await handler._auth_jwt(token=token)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_on_user_lookup_db_error():
+    """_try_oauth_access_token returns False and sends 503 when user lookup fails."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(side_effect=RuntimeError("DB connection lost"))),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert mock_send_error.call_args.kwargs.get("status_code") == 503
+
+
+@pytest.mark.asyncio
+async def test_try_oauth_returns_false_on_team_resolution_db_error():
+    """_try_oauth_access_token returns False and sends 503 when team resolution fails."""
+    handler = _make_oauth_handler()
+    mock_send_error = AsyncMock(return_value=False)
+    server = _make_server_record()
+    user = _make_user_record()
+
+    mock_db = MagicMock()
+    mock_db.execute.return_value.scalar_one_or_none.return_value = server
+    mock_db.__enter__ = MagicMock(return_value=mock_db)
+    mock_db.__exit__ = MagicMock(return_value=False)
+
+    verified_claims = {"email": "user@example.com", "sub": "user@example.com", "iss": "https://idp.example.com/realms/test"}
+
+    with (
+        patch.object(tr._StreamableHttpAuthHandler, "_send_error", mock_send_error),
+        patch("mcpgateway.transports.streamablehttp_transport.get_db", return_value=AsyncMock(__aenter__=AsyncMock(return_value=mock_db), __aexit__=AsyncMock())),
+        patch("mcpgateway.utils.verify_credentials.verify_oauth_access_token", AsyncMock(return_value=verified_claims)),
+        patch("mcpgateway.auth._get_user_by_email_sync", MagicMock(return_value=user)),
+        patch("mcpgateway.auth._resolve_teams_from_db", AsyncMock(side_effect=RuntimeError("DB connection lost"))),
+    ):
+        result = await handler._try_oauth_access_token("idp-token")
+
+    assert result is False
+    mock_send_error.assert_awaited_once()
+    assert mock_send_error.call_args.kwargs.get("status_code") == 503

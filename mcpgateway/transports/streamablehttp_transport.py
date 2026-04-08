@@ -3403,7 +3403,7 @@ class _StreamableHttpAuthHandler:
         set_trace_context_from_teams([], auth_method="anonymous")
         return True  # Allow request to proceed with public-only access
 
-    async def _auth_jwt(self, *, token: str) -> bool:
+    async def _auth_jwt(self, *, token: str) -> bool:  # noqa: PLR0911
         """Verify a JWT Bearer token and populate the user context.
 
         Routes to ContextForge-issued or IdP-issued (OAuth) verification based
@@ -3420,23 +3420,21 @@ class _StreamableHttpAuthHandler:
         # ContextForge-issued tokens (SSO session, API tokens) have iss == settings.jwt_issuer.
         # IdP-issued tokens (OAuth access tokens from e.g. Keycloak, Authentik) have the IdP's issuer.
         # Third-Party
-        import jwt  # pylint: disable=import-outside-toplevel
+        import jwt as _jwt_lib  # pylint: disable=import-outside-toplevel
 
         try:
-            unverified = jwt.decode(token, options={"verify_signature": False})
-        except jwt.DecodeError:
-            return await self._send_error(detail="Invalid token format", headers={"WWW-Authenticate": "Bearer"})
+            unverified = _jwt_lib.decode(token, options={"verify_signature": False})
+            token_issuer = unverified.get("iss", "")
+        except _jwt_lib.DecodeError:
+            token_issuer = ""  # nosec B105 - Not a password; fall through to verify_credentials
 
-        token_issuer = unverified.get("iss", "")
-        if token_issuer != settings.jwt_issuer:
-            # IdP-issued token — delegate to OAuth access token verification
+        if token_issuer and token_issuer != settings.jwt_issuer:
+            # IdP-issued token — delegate to OAuth access token verification.
+            # Returns True (success), False (error sent), or None (not an OAuth server).
             oauth_result = await self._try_oauth_access_token(token)
-            if oauth_result is True:
-                return True
-            if oauth_result is False:
-                return False  # Error response already sent
-            # Not an oauth_enabled server — reject
-            return await self._send_error(detail="Invalid authentication credentials", headers={"WWW-Authenticate": "Bearer"})
+            if oauth_result is None:
+                oauth_result = await self._send_error(detail="Invalid authentication credentials", headers={"WWW-Authenticate": "Bearer"})
+            return bool(oauth_result)
 
         try:
             user_payload = await verify_credentials(token)
@@ -3759,12 +3757,20 @@ class _StreamableHttpAuthHandler:
             return None
 
         client_id = server.oauth_config.get("client_id")
+        if not client_id:
+            logger.warning(
+                "OAuth server %s has no client_id configured — audience (aud) validation is disabled. " "Set oauth_config.client_id to prevent token confusion across clients sharing the same issuer.",
+                server_id,
+            )
 
         # Verify token against the IdP's JWKS
         # First-Party
-        from mcpgateway.utils.verify_credentials import verify_oauth_access_token  # pylint: disable=import-outside-toplevel
+        from mcpgateway.utils.verify_credentials import OAUTH_VERIFY_UNAVAILABLE, verify_oauth_access_token  # pylint: disable=import-outside-toplevel
 
         claims = await verify_oauth_access_token(token, authorization_servers, expected_audience=client_id)
+        if claims is OAUTH_VERIFY_UNAVAILABLE:
+            await self._send_error(detail="OAuth verification service unavailable", status_code=503)
+            return False
         if claims is None:
             resource_metadata = _build_resource_metadata_url(self.scope, server_id)
             www_auth = f'Bearer resource_metadata="{resource_metadata}"' if resource_metadata else "Bearer"
@@ -3783,7 +3789,12 @@ class _StreamableHttpAuthHandler:
         # First-Party
         from mcpgateway.auth import _get_user_by_email_sync, _resolve_teams_from_db  # pylint: disable=import-outside-toplevel
 
-        user_record = await asyncio.to_thread(_get_user_by_email_sync, user_email)
+        try:
+            user_record = await asyncio.to_thread(_get_user_by_email_sync, user_email)
+        except Exception:
+            logger.exception("DB error looking up user %s for OAuth verification", user_email)
+            await self._send_error(detail="Service unavailable — unable to verify user", status_code=503)
+            return False
         if user_record is None:
             await self._send_error(detail="User not registered in ContextForge. Please log in via SSO first.")
             return False
@@ -3793,7 +3804,12 @@ class _StreamableHttpAuthHandler:
 
         # Resolve teams from DB (same path as session tokens)
         is_admin = bool(user_record.is_admin)
-        final_teams = None if is_admin else await _resolve_teams_from_db(user_email, user_record)
+        try:
+            final_teams = None if is_admin else await _resolve_teams_from_db(user_email, user_record)
+        except Exception:
+            logger.exception("DB error resolving teams for user %s during OAuth verification", user_email)
+            await self._send_error(detail="Service unavailable — unable to resolve teams", status_code=503)
+            return False
 
         user_context_var.set(
             {
@@ -3802,8 +3818,15 @@ class _StreamableHttpAuthHandler:
                 "is_authenticated": True,
                 "is_admin": is_admin,
                 "permission_is_admin": is_admin,
-                "token_use": "oauth_access_token",
+                "token_use": "oauth_access_token",  # nosec B105 - Not a password; token_use is a JWT claim type
+                "auth_method": "oauth",
             }
+        )
+        set_trace_context_from_teams(
+            final_teams or [],
+            user_email=user_email,
+            is_admin=is_admin,
+            auth_method="oauth",
         )
         _oauth_checked_var.set(True)
         return True
